@@ -34,7 +34,7 @@ interface AppSidebarProps {
 }
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate }) => {
-  const { isSuperAdmin, currentUser, projects, notifications, suggestions } = useWorkspace();
+  const { isSuperAdmin, currentUser, projects, notifications, suggestions, signOut } = useWorkspace();
 
   const unreadNotifs = notifications.filter((n) => !n.isRead).length;
   const pendingSuggestions = suggestions.filter(
@@ -148,13 +148,22 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate 
             </div>
           </div>
 
-          <button
-            onClick={() => onNavigate('settings')}
-            className="p-1 rounded text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition"
-            title="Account Settings"
-          >
-            <Settings className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onNavigate('settings')}
+              className="p-1 rounded text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition"
+              title="Account Settings"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => signOut()}
+              className="p-1 rounded text-[#B4B0B0] hover:text-[#FB7185] hover:bg-[#FB7185]/10 transition"
+              title="Sign Out of Workspace"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </div>
     </aside>

@@ -59,7 +59,6 @@ export const TasksView: React.FC = () => {
       priority: newTaskPriority,
       assigneeId: newTaskAssigneeId || undefined,
       dueDate: newTaskDueDate || undefined,
-      tags: [],
     });
 
     setNewTaskTitle('');
@@ -75,44 +74,48 @@ export const TasksView: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-6xl mx-auto">
       {/* Top Header & CTAs */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#38302D]">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight">Tasks & Kanban Board</h1>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <h1 className="text-xl font-bold text-[#F4F8FF] tracking-tight">Tasks & Kanban Board</h1>
+          <p className="text-xs text-[#B4B0B0] mt-0.5">
             Manage development deliverables across accessible projects.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           {/* View toggle */}
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
+          <div className="flex items-center gap-1 bg-[#191311] border border-[#38302D] rounded-xl p-1">
             <button
               onClick={() => setViewMode('kanban')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 transition ${
-                viewMode === 'kanban' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+              className={`p-1.5 rounded-lg text-xs flex items-center gap-1 transition cursor-pointer ${
+                viewMode === 'kanban'
+                  ? 'bg-[#211B19] text-[#F4F8FF] font-semibold border border-[#38302D]'
+                  : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
               }`}
               title="Kanban Board"
             >
-              <Kanban className="w-3.5 h-3.5" />
+              <Kanban className="w-3.5 h-3.5 text-[#8B5CF6]" />
               <span className="hidden sm:inline">Kanban</span>
             </button>
             <button
               onClick={() => setViewMode('list')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 transition ${
-                viewMode === 'list' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+              className={`p-1.5 rounded-lg text-xs flex items-center gap-1 transition cursor-pointer ${
+                viewMode === 'list'
+                  ? 'bg-[#211B19] text-[#F4F8FF] font-semibold border border-[#38302D]'
+                  : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
               }`}
               title="List View"
             >
-              <List className="w-3.5 h-3.5" />
+              <List className="w-3.5 h-3.5 text-[#3B82F6]" />
               <span className="hidden sm:inline">List</span>
             </button>
           </div>
 
           <button
             onClick={() => setIsCreateModalOpen(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500 shadow-sm transition"
+            className="flex items-center gap-1.5 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] px-3.5 py-2 text-xs font-semibold text-white shadow-lg shadow-[#8B5CF6]/20 transition cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Create Task</span>
@@ -121,16 +124,16 @@ export const TasksView: React.FC = () => {
       </div>
 
       {/* Filter Toolbar */}
-      <div className="flex flex-wrap items-center gap-3 border-b border-slate-800 pb-3 text-xs">
-        <div className="flex items-center gap-1.5 text-slate-400">
-          <Filter className="w-3.5 h-3.5" />
+      <div className="flex flex-wrap items-center gap-3 border-b border-[#38302D] pb-3 text-xs">
+        <div className="flex items-center gap-1.5 text-[#B4B0B0]">
+          <Filter className="w-3.5 h-3.5 text-[#8B5CF6]" />
           <span>Filter By:</span>
         </div>
 
         <select
           value={selectedProjectId}
           onChange={(e) => setSelectedProjectId(e.target.value)}
-          className="rounded-md border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none"
+          className="rounded-xl border border-[#38302D] bg-[#191311] px-3 py-1.5 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
         >
           <option value="all">All Accessible Projects ({projects.length})</option>
           {projects.map((p) => (
@@ -143,7 +146,7 @@ export const TasksView: React.FC = () => {
         <select
           value={selectedAssigneeId}
           onChange={(e) => setSelectedAssigneeId(e.target.value)}
-          className="rounded-md border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none"
+          className="rounded-xl border border-[#38302D] bg-[#191311] px-3 py-1.5 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
         >
           <option value="all">All Assignees ({profiles.length})</option>
           {profiles.map((p) => (
@@ -163,12 +166,12 @@ export const TasksView: React.FC = () => {
             return (
               <div
                 key={col.id}
-                className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 space-y-3 min-h-[400px]"
+                className="rounded-2xl border border-[#38302D] bg-[#191311] p-3.5 space-y-3 min-h-[420px]"
               >
                 {/* Column Header */}
-                <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
-                  <span className="font-semibold text-xs text-slate-300">{col.label}</span>
-                  <span className="font-mono text-[11px] rounded bg-slate-900 px-2 py-0.5 text-slate-400">
+                <div className="flex items-center justify-between pb-2 border-b border-[#38302D]/80">
+                  <span className="font-semibold text-xs text-[#F4F8FF]">{col.label}</span>
+                  <span className="font-mono text-[11px] rounded-md bg-[#211B19] border border-[#38302D] px-2 py-0.5 text-[#B4B0B0]">
                     {col.count}
                   </span>
                 </div>
@@ -181,27 +184,35 @@ export const TasksView: React.FC = () => {
                     return (
                       <div
                         key={task.id}
-                        className="rounded-lg border border-slate-800/90 bg-slate-900/70 p-3 text-xs space-y-2 hover:border-slate-700 transition shadow-xs"
+                        className="rounded-xl border border-[#38302D] bg-[#211B19]/70 p-3 text-xs space-y-2 hover:border-[#8B5CF6]/40 transition shadow-sm"
                       >
-                        <div className="flex items-center justify-between text-[10px] text-slate-400">
-                          <span className="font-medium text-indigo-400 truncate max-w-[130px]">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="font-medium text-[#8B5CF6] truncate max-w-[130px]">
                             {proj?.name || 'Project'}
                           </span>
-                          <span className="font-mono uppercase font-semibold text-amber-400">
+                          <span
+                            className={`font-mono uppercase font-bold text-[10px] ${
+                              task.priority === 'urgent'
+                                ? 'text-[#FB7185]'
+                                : task.priority === 'high'
+                                ? 'text-[#FBBF24]'
+                                : 'text-[#34D399]'
+                            }`}
+                          >
                             {task.priority}
                           </span>
                         </div>
 
-                        <div className="font-medium text-slate-100 leading-snug">{task.title}</div>
+                        <div className="font-medium text-[#F4F8FF] leading-snug">{task.title}</div>
 
                         {task.description && (
-                          <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                          <p className="text-[11px] text-[#B4B0B0] line-clamp-2 leading-relaxed">
                             {task.description}
                           </p>
                         )}
 
-                        <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-[11px] text-slate-400">
-                          <span className="text-slate-300">
+                        <div className="flex items-center justify-between pt-2 border-t border-[#38302D]/60 text-[11px] text-[#B4B0B0]">
+                          <span className="text-[#F4F8FF]">
                             {task.assignee?.fullName || 'Unassigned'}
                           </span>
 
@@ -211,7 +222,7 @@ export const TasksView: React.FC = () => {
                             onChange={(e) =>
                               updateTask(task.id, { status: e.target.value as Task['status'] })
                             }
-                            className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none"
+                            className="bg-[#0F0B0A] border border-[#38302D] rounded-md px-1.5 py-0.5 text-[10px] text-[#B4B0B0] focus:border-[#8B5CF6] focus:outline-none"
                           >
                             <option value="todo">To Do</option>
                             <option value="in_progress">In Progress</option>
@@ -224,7 +235,7 @@ export const TasksView: React.FC = () => {
                   })}
 
                   {columnTasks.length === 0 && (
-                    <div className="py-8 text-center text-xs text-slate-600">No tasks</div>
+                    <div className="py-8 text-center text-xs text-[#B4B0B0]/60">No tasks</div>
                   )}
                 </div>
               </div>
@@ -233,10 +244,10 @@ export const TasksView: React.FC = () => {
         </div>
       ) : (
         /* LIST VIEW */
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+        <div className="rounded-2xl border border-[#38302D] bg-[#191311] overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-800 bg-slate-950/80 text-[10px] text-slate-400 uppercase tracking-wider">
+              <thead className="border-b border-[#38302D] bg-[#0F0B0A] text-[10px] text-[#B4B0B0] uppercase tracking-wider font-mono">
                 <tr>
                   <th className="p-3">Title</th>
                   <th className="p-3">Project</th>
@@ -246,20 +257,20 @@ export const TasksView: React.FC = () => {
                   <th className="p-3">Due Date</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800 text-slate-300">
+              <tbody className="divide-y divide-[#38302D] text-[#B4B0B0]">
                 {filteredTasks.map((task) => {
                   const proj = projects.find((p) => p.id === task.projectId);
                   return (
-                    <tr key={task.id} className="hover:bg-slate-800/30">
-                      <td className="p-3 font-medium text-slate-100">{task.title}</td>
-                      <td className="p-3 text-indigo-400">{proj?.name || 'Project'}</td>
+                    <tr key={task.id} className="hover:bg-[#211B19]/50 transition">
+                      <td className="p-3 font-medium text-[#F4F8FF]">{task.title}</td>
+                      <td className="p-3 text-[#8B5CF6]">{proj?.name || 'Project'}</td>
                       <td className="p-3">
                         <select
                           value={task.status}
                           onChange={(e) =>
                             updateTask(task.id, { status: e.target.value as Task['status'] })
                           }
-                          className="bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 capitalize"
+                          className="bg-[#0F0B0A] border border-[#38302D] rounded-lg px-2 py-1 text-xs text-[#F4F8FF] capitalize focus:border-[#8B5CF6] focus:outline-none"
                         >
                           <option value="todo">To Do</option>
                           <option value="in_progress">In Progress</option>
@@ -267,11 +278,11 @@ export const TasksView: React.FC = () => {
                           <option value="done">Done</option>
                         </select>
                       </td>
-                      <td className="p-3 font-mono uppercase text-amber-400 text-[11px]">
+                      <td className="p-3 font-mono uppercase text-[#FBBF24] text-[11px]">
                         {task.priority}
                       </td>
-                      <td className="p-3">{task.assignee?.fullName || 'Unassigned'}</td>
-                      <td className="p-3 font-mono text-[11px] text-slate-400">
+                      <td className="p-3 text-[#F4F8FF]">{task.assignee?.fullName || 'Unassigned'}</td>
+                      <td className="p-3 font-mono text-[11px] text-[#B4B0B0]">
                         {task.dueDate ? new Date(task.dueDate).toLocaleDateString() : '—'}
                       </td>
                     </tr>
@@ -285,13 +296,13 @@ export const TasksView: React.FC = () => {
 
       {/* Create Task Modal */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-6 shadow-2xl text-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#38302D] bg-[#191311] p-6 shadow-2xl text-[#F4F8FF]">
+            <div className="flex items-center justify-between pb-3 border-b border-[#38302D]">
               <h3 className="font-semibold text-sm">Create New Task</h3>
               <button
                 onClick={() => setIsCreateModalOpen(false)}
-                className="rounded p-1 text-slate-400 hover:text-white"
+                className="rounded-lg p-1 text-[#B4B0B0] hover:text-[#F4F8FF]"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -299,11 +310,11 @@ export const TasksView: React.FC = () => {
 
             <form onSubmit={handleCreateTask} className="mt-4 space-y-4 text-xs">
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-300">Target Project *</label>
+                <label className="text-[11px] font-medium text-[#B4B0B0]">Target Project *</label>
                 <select
                   value={newTaskProjectId}
                   onChange={(e) => setNewTaskProjectId(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                 >
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -314,35 +325,35 @@ export const TasksView: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-300">Task Title *</label>
+                <label className="text-[11px] font-medium text-[#B4B0B0]">Task Title *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Implement token bucket rate limiter"
                   value={newTaskTitle}
                   onChange={(e) => setNewTaskTitle(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-300">Description</label>
+                <label className="text-[11px] font-medium text-[#B4B0B0]">Description</label>
                 <textarea
                   rows={2}
                   placeholder="Technical acceptance criteria..."
                   value={newTaskDesc}
                   onChange={(e) => setNewTaskDesc(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-slate-300">Priority</label>
+                  <label className="text-[11px] font-medium text-[#B4B0B0]">Priority</label>
                   <select
                     value={newTaskPriority}
                     onChange={(e) => setNewTaskPriority(e.target.value as Priority)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white focus:outline-none"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-2.5 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                   >
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
@@ -352,11 +363,11 @@ export const TasksView: React.FC = () => {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-slate-300">Assignee</label>
+                  <label className="text-[11px] font-medium text-[#B4B0B0]">Assignee</label>
                   <select
                     value={newTaskAssigneeId}
                     onChange={(e) => setNewTaskAssigneeId(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white focus:outline-none"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-2.5 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                   >
                     <option value="">Unassigned</option>
                     {profiles.map((p) => (
@@ -369,26 +380,26 @@ export const TasksView: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-300">Due Date</label>
+                <label className="text-[11px] font-medium text-[#B4B0B0]">Due Date</label>
                 <input
                   type="date"
                   value={newTaskDueDate}
                   onChange={(e) => setNewTaskDueDate(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white focus:outline-none"
+                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-2.5 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#38302D]">
                 <button
                   type="button"
                   onClick={() => setIsCreateModalOpen(false)}
-                  className="rounded px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                  className="rounded-xl px-3 py-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF]"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="rounded bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                  className="rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] px-4 py-2 text-xs font-semibold text-white cursor-pointer"
                 >
                   Create Task
                 </button>

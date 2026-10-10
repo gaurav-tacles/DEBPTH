@@ -15,8 +15,9 @@ import {
   UserRole,
 } from '../types';
 import { logger } from '../lib/logger';
+import { getSupabaseClient } from '../lib/supabase';
 
-const STORAGE_KEY_DATA = 'project_apex_workspace_v2';
+const STORAGE_KEY_DATA = 'projecthub_workspace_v3';
 
 interface WorkspaceDatabase {
   profiles: UserProfile[];
@@ -34,537 +35,20 @@ interface WorkspaceDatabase {
 }
 
 function getInitialDatabase(): WorkspaceDatabase {
-  const superAdminId = 'user-superadmin-01';
-  const sarahId = 'user-sarah-02';
-  const marcusId = 'user-marcus-03';
-  const alexId = 'user-alex-04';
-
-  const profiles: UserProfile[] = [
-    {
-      id: superAdminId,
-      email: 'gauravp18189@gmail.com',
-      fullName: 'Gaurav P.',
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      role: 'super_admin',
-      labels: ['Architecture', 'Security', 'Founding Member'],
-      githubUsername: 'gaurav-dev',
-      mfaEnabled: true,
-      createdAt: '2026-01-15T09:00:00Z',
-      lastActiveAt: new Date().toISOString(),
-    },
-    {
-      id: sarahId,
-      email: 'sarah.chen@devforge.local',
-      fullName: 'Sarah Chen',
-      avatarUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-      role: 'member',
-      labels: ['Frontend', 'UI/UX', 'Design System'],
-      githubUsername: 'schen-ui1',
-      mfaEnabled: true,
-      createdAt: '2026-02-01T10:30:00Z',
-      lastActiveAt: '2026-10-09T18:40:00Z',
-    },
-    {
-      id: marcusId,
-      email: 'marcus.v@devforge.local',
-      fullName: 'Marcus Vance',
-      avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-      role: 'member',
-      labels: ['Backend', 'PostgreSQL', 'DevOps'],
-      githubUsername: 'marcus-sys',
-      mfaEnabled: false,
-      createdAt: '2026-02-10T14:15:00Z',
-      lastActiveAt: '2026-10-10T07:15:00Z',
-    },
-    {
-      id: alexId,
-      email: 'alex.r@devforge.local',
-      fullName: 'Alex Rivera',
-      avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-      role: 'member',
-      labels: ['Mobile', 'PWA', 'Android'],
-      githubUsername: 'rivera-mobile',
-      mfaEnabled: true,
-      createdAt: '2026-03-01T11:00:00Z',
-      lastActiveAt: '2026-10-08T15:20:00Z',
-    },
-  ];
-
-  const projApexId = 'proj-apex-01';
-  const projValkyrieId = 'proj-valkyrie-02';
-  const projChronosId = 'proj-chronos-03';
-  const projNebulaId = 'proj-nebula-04';
-
-  const projects: Project[] = [
-    {
-      id: projApexId,
-      name: 'Project Apex: Core Microservices Gateway',
-      slug: 'project-apex',
-      summary: 'High-throughput Rust & TypeScript API gateway with dynamic rate limiting and token validation.',
-      problemStatement: 'Legacy monolithic proxy was bottlenecking at 14,000 req/sec with high latency jitter.',
-      description: 'Unified edge routing layer handling cross-cutting concerns: OAuth introspection, schema validation, telemetry propagation, and zero-downtime canary deployment.',
-      goals: ['Reduce p99 latency to < 5ms', 'Enforce mTLS between services', 'Automated token caching'],
-      features: ['Rust reverse proxy core', 'Distributed token bucket limiter', 'OpenTelemetry exporter'],
-      status: 'in_progress',
-      priority: 'high',
-      techStack: ['Rust', 'TypeScript', 'Docker', 'Redis', 'PostgreSQL'],
-      repositories: [
-        { name: 'torvalds/linux', branch: 'master', description: 'Core routing engine (Linux reference repo)', isPrivate: false },
-        { name: 'expressjs/express', branch: 'master', description: 'Node management API', isPrivate: false },
-      ],
-      links: [
-        { title: 'Architecture RFC #14', url: 'https://github.com' },
-        { title: 'Grafana Staging Dashboard', url: 'https://grafana.com' },
-      ],
-      startDate: '2026-03-01',
-      targetDate: '2026-11-30',
-      ownerId: superAdminId,
-      archived: false,
-      createdAt: '2026-03-01T08:00:00Z',
-      updatedAt: '2026-10-09T14:00:00Z',
-    },
-    {
-      id: projValkyrieId,
-      name: 'Valkyrie: Cross-Platform Edge Client',
-      slug: 'valkyrie-client',
-      summary: 'Touch-optimized Progressive Web Application with offline sync engine for mobile and desktop.',
-      problemStatement: 'Field engineers require offline access to telemetry and logs during remote deployments.',
-      description: 'PWA built with React 19, IndexedDB offline queues, biometric auth, and instantaneous background synchronization.',
-      goals: ['100% offline functionality for key screens', 'Fast install prompt on Android/iOS', 'Sub-second search'],
-      features: ['IndexedDB cache engine', 'Touch-friendly swipe cards', 'Encrypted local key storage'],
-      status: 'in_progress',
-      priority: 'medium',
-      techStack: ['React', 'TypeScript', 'Tailwind CSS', 'Vite', 'Service Worker'],
-      repositories: [
-        { name: 'vitejs/vite', branch: 'main', description: 'Bundling infrastructure', isPrivate: false },
-      ],
-      links: [
-        { title: 'Figma UI Specifications', url: 'https://figma.com' },
-      ],
-      startDate: '2026-04-10',
-      targetDate: '2026-12-15',
-      ownerId: superAdminId,
-      archived: false,
-      createdAt: '2026-04-10T10:00:00Z',
-      updatedAt: '2026-10-08T16:30:00Z',
-    },
-    {
-      id: projChronosId,
-      name: 'Chronos: Distributed Task Scheduler',
-      slug: 'chronos-scheduler',
-      summary: 'Confidential solo initiative: distributed cron coordinator with deterministic consensus.',
-      problemStatement: 'Multi-datacenter job duplication during network partitions.',
-      description: 'Lightweight Raft-based scheduling cluster orchestrating distributed jobs with millisecond precision. Admin solo project.',
-      goals: ['Zero job duplication guarantee', 'Leader election < 300ms', 'Minimal memory footprint'],
-      features: ['Raft consensus module', 'Heartbeat health monitor', 'Persistent write-ahead log'],
-      status: 'planned',
-      priority: 'urgent',
-      techStack: ['Go', 'gRPC', 'PostgreSQL', 'Prometheus'],
-      repositories: [],
-      links: [],
-      startDate: '2026-09-01',
-      targetDate: '2027-01-31',
-      ownerId: superAdminId,
-      archived: false,
-      createdAt: '2026-09-01T12:00:00Z',
-      updatedAt: '2026-10-05T09:00:00Z',
-    },
-    {
-      id: projNebulaId,
-      name: 'Nebula: In-Memory Vector Search Engine',
-      slug: 'nebula-vector',
-      summary: 'Experimental HNSW graph indexer for localized embedding search on edge servers.',
-      description: 'Research project exploring quantization and SIMD vector distance calculations on low-power ARM servers.',
-      goals: ['Evaluate 8-bit scalar quantization', 'Benchmark memory footprint'],
-      features: ['Cosine similarity AVX2', 'HNSW graph indexing'],
-      status: 'idea',
-      priority: 'low',
-      techStack: ['C++', 'Python', 'SIMD', 'NumPy'],
-      repositories: [],
-      links: [],
-      startDate: '2026-10-01',
-      targetDate: '2027-03-01',
-      ownerId: superAdminId,
-      archived: false,
-      createdAt: '2026-10-01T15:00:00Z',
-      updatedAt: '2026-10-02T11:00:00Z',
-    },
-  ];
-
-  // Project Memberships: Independent for every project!
-  // Apex has SuperAdmin and Marcus
-  // Valkyrie has SuperAdmin, Sarah, and Alex
-  // Chronos has ONLY SuperAdmin (solo project!)
-  // Nebula has SuperAdmin and Marcus
-  const projectMembers: ProjectMember[] = [
-    // Apex
-    {
-      id: 'pm-01',
-      projectId: projApexId,
-      userId: superAdminId,
-      role: 'lead',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: true },
-      joinedAt: '2026-03-01T08:00:00Z',
-    },
-    {
-      id: 'pm-02',
-      projectId: projApexId,
-      userId: marcusId,
-      role: 'maintainer',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: false },
-      joinedAt: '2026-03-05T10:00:00Z',
-    },
-    // Valkyrie
-    {
-      id: 'pm-03',
-      projectId: projValkyrieId,
-      userId: superAdminId,
-      role: 'lead',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: true },
-      joinedAt: '2026-04-10T10:00:00Z',
-    },
-    {
-      id: 'pm-04',
-      projectId: projValkyrieId,
-      userId: sarahId,
-      role: 'collaborator',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: false },
-      joinedAt: '2026-04-12T11:00:00Z',
-    },
-    {
-      id: 'pm-05',
-      projectId: projValkyrieId,
-      userId: alexId,
-      role: 'collaborator',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: false },
-      joinedAt: '2026-04-15T09:30:00Z',
-    },
-    // Chronos (Solo project for SuperAdmin!)
-    {
-      id: 'pm-06',
-      projectId: projChronosId,
-      userId: superAdminId,
-      role: 'lead',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: true },
-      joinedAt: '2026-09-01T12:00:00Z',
-    },
-    // Nebula
-    {
-      id: 'pm-07',
-      projectId: projNebulaId,
-      userId: superAdminId,
-      role: 'lead',
-      permissions: { canManageTasks: true, canUploadDocs: true, canViewMetrics: true, canManageMembers: true },
-      joinedAt: '2026-10-01T15:00:00Z',
-    },
-    {
-      id: 'pm-08',
-      projectId: projNebulaId,
-      userId: marcusId,
-      role: 'viewer',
-      permissions: { canManageTasks: false, canUploadDocs: false, canViewMetrics: true, canManageMembers: false },
-      joinedAt: '2026-10-02T10:00:00Z',
-    },
-  ];
-
-  const milestones: Milestone[] = [
-    {
-      id: 'm-01',
-      projectId: projApexId,
-      title: 'v1.0-rc1 Gateway Stabilization',
-      description: 'Complete token validation and reach 10k req/sec benchmark.',
-      dueDate: '2026-10-25',
-      status: 'open',
-      createdAt: '2026-09-10T10:00:00Z',
-    },
-    {
-      id: 'm-02',
-      projectId: projValkyrieId,
-      title: 'PWA Offline Storage Beta',
-      description: 'Ship IndexedDB queue and touch swipe gestures.',
-      dueDate: '2026-11-05',
-      status: 'open',
-      createdAt: '2026-09-15T12:00:00Z',
-    },
-  ];
-
-  const tasks: Task[] = [
-    {
-      id: 't-01',
-      projectId: projApexId,
-      title: 'Implement token bucket rate limiter in Rust core',
-      description: 'Must handle multi-tenant quotas with Redis cluster fallback.',
-      status: 'in_progress',
-      priority: 'high',
-      assigneeId: marcusId,
-      dueDate: '2026-10-18',
-      milestoneId: 'm-01',
-      tags: ['Rust', 'Performance'],
-      createdAt: '2026-10-02T10:00:00Z',
-      updatedAt: '2026-10-09T11:00:00Z',
-    },
-    {
-      id: 't-02',
-      projectId: projApexId,
-      title: 'Configure mTLS mutual TLS cert rotation',
-      description: 'Ensure automated Let’s Encrypt / internal CA certificate exchange.',
-      status: 'todo',
-      priority: 'urgent',
-      assigneeId: superAdminId,
-      dueDate: '2026-10-22',
-      milestoneId: 'm-01',
-      tags: ['Security', 'mTLS'],
-      createdAt: '2026-10-05T09:00:00Z',
-      updatedAt: '2026-10-05T09:00:00Z',
-    },
-    {
-      id: 't-03',
-      projectId: projApexId,
-      title: 'Audit OpenTelemetry trace propagation headers',
-      description: 'Verify W3C tracecontext format across async boundaries.',
-      status: 'done',
-      priority: 'medium',
-      assigneeId: marcusId,
-      dueDate: '2026-10-08',
-      milestoneId: 'm-01',
-      tags: ['Observability'],
-      createdAt: '2026-09-28T14:00:00Z',
-      updatedAt: '2026-10-08T17:00:00Z',
-    },
-    {
-      id: 't-04',
-      projectId: projValkyrieId,
-      title: 'Optimize mobile bottom sheet animations for Android',
-      description: 'Ensure 60fps gesture dragging without dropped frames.',
-      status: 'in_progress',
-      priority: 'medium',
-      assigneeId: sarahId,
-      dueDate: '2026-10-20',
-      milestoneId: 'm-02',
-      tags: ['Mobile', 'UI'],
-      createdAt: '2026-10-06T11:00:00Z',
-      updatedAt: '2026-10-09T15:00:00Z',
-    },
-    {
-      id: 't-05',
-      projectId: projValkyrieId,
-      title: 'Implement Service Worker cache-first runtime caching',
-      description: 'Cache static assets and API metadata with TTL expiration.',
-      status: 'todo',
-      priority: 'high',
-      assigneeId: alexId,
-      dueDate: '2026-10-24',
-      milestoneId: 'm-02',
-      tags: ['PWA', 'Offline'],
-      createdAt: '2026-10-07T13:00:00Z',
-      updatedAt: '2026-10-07T13:00:00Z',
-    },
-    {
-      id: 't-06',
-      projectId: projChronosId,
-      title: 'Draft Raft leader election protocol specification',
-      description: 'Define heartbeats, candidate election timeout, and log match invariants.',
-      status: 'in_progress',
-      priority: 'urgent',
-      assigneeId: superAdminId,
-      dueDate: '2026-10-30',
-      tags: ['Consensus', 'Spec'],
-      createdAt: '2026-10-01T10:00:00Z',
-      updatedAt: '2026-10-08T12:00:00Z',
-    },
-  ];
-
-  const documents: ProjectDocument[] = [
-    {
-      id: 'doc-01',
-      projectId: projApexId,
-      title: 'Architecture Blueprint & Threat Model v2',
-      fileName: 'apex-gateway-architecture-v2.pdf',
-      fileSize: 2450000,
-      mimeType: 'application/pdf',
-      storagePath: 'projects/proj-apex-01/docs/apex-gateway-architecture-v2.pdf',
-      isRestricted: false,
-      uploadedBy: superAdminId,
-      createdAt: '2026-09-12T10:00:00Z',
-      updatedAt: '2026-09-12T10:00:00Z',
-    },
-    {
-      id: 'doc-02',
-      projectId: projApexId,
-      title: 'Internal Penetration Testing Report & Key Material',
-      fileName: 'pen-test-audit-q3-confidential.pdf',
-      fileSize: 4890000,
-      mimeType: 'application/pdf',
-      storagePath: 'projects/proj-apex-01/restricted/pen-test-audit-q3-confidential.pdf',
-      isRestricted: true, // RESTRICTED: Requires Admin access or approved grant!
-      uploadedBy: superAdminId,
-      createdAt: '2026-09-20T14:30:00Z',
-      updatedAt: '2026-09-20T14:30:00Z',
-    },
-    {
-      id: 'doc-03',
-      projectId: projValkyrieId,
-      title: 'Mobile PWA Interaction Specs & Design Tokens',
-      fileName: 'valkyrie-design-system.json',
-      fileSize: 450000,
-      mimeType: 'application/json',
-      storagePath: 'projects/proj-valkyrie-02/docs/valkyrie-design-system.json',
-      isRestricted: false,
-      uploadedBy: sarahId,
-      createdAt: '2026-09-25T09:15:00Z',
-      updatedAt: '2026-09-25T09:15:00Z',
-    },
-  ];
-
-  const documentGrants: DocumentAccessGrant[] = [
-    {
-      id: 'grant-01',
-      documentId: 'doc-02',
-      userId: marcusId,
-      status: 'approved',
-      reason: 'Needed to fix vulnerability findings identified in section 4.2 of the audit.',
-      grantedUntil: '2026-11-01T00:00:00Z',
-      requestedAt: '2026-09-22T08:00:00Z',
-      reviewedBy: superAdminId,
-      reviewedAt: '2026-09-22T09:00:00Z',
-      reviewerNotes: 'Approved for remediation period until Nov 1st.',
-    },
-  ];
-
-  const suggestions: Suggestion[] = [
-    {
-      id: 'sug-01',
-      title: 'Add automatic Redis failover health ping in Gateway',
-      description: 'When Redis sentinel triggers failover, the gateway should reconnect immediately without dropping in-flight sockets.',
-      category: 'feature',
-      projectId: projApexId,
-      submitterId: marcusId,
-      status: 'under_review',
-      adminNotes: 'High priority for production cluster stability.',
-      adminResponse: 'Under review by Gaurav. We will benchmark reconnect timeout.',
-      attachmentUrl: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=800&auto=format&fit=crop&q=80',
-      attachmentName: 'sentinel-failover-benchmark.png',
-      createdAt: '2026-10-04T11:20:00Z',
-      updatedAt: '2026-10-06T14:00:00Z',
-    },
-    {
-      id: 'sug-02',
-      title: 'Support haptic feedback on touch gestures in mobile PWA',
-      description: 'Use Navigator.vibrate API when swiping cards or confirming task status changes on Android.',
-      category: 'idea',
-      projectId: projValkyrieId,
-      submitterId: alexId,
-      status: 'accepted',
-      adminNotes: 'Accepted for v1.2 mobile release.',
-      adminResponse: 'Great idea Alex, converting this into an active task for Valkyrie.',
-      attachmentUrl: 'https://images.unsplash.com/photo-1526498460520-4c246339dccb?w=800&auto=format&fit=crop&q=80',
-      attachmentName: 'haptics-interaction-flow.png',
-      createdAt: '2026-10-02T15:00:00Z',
-      updatedAt: '2026-10-08T10:00:00Z',
-    },
-    {
-      id: 'sug-03',
-      title: 'Memory leak in connection pooling under high concurrency',
-      description: 'Observed 12MB/hour memory growth in the connection pool when socket idle timeout is set under 10 seconds. Repro steps and pprof profile attached.',
-      category: 'bug',
-      projectId: projApexId,
-      submitterId: marcusId,
-      status: 'submitted',
-      attachmentUrl: 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=800&auto=format&fit=crop&q=80',
-      attachmentName: 'pprof-heap-profile.png',
-      createdAt: '2026-10-09T08:30:00Z',
-      updatedAt: '2026-10-09T08:30:00Z',
-    },
-  ];
-
-  const announcements: Announcement[] = [
-    {
-      id: 'anc-01',
-      title: 'Infrastructure Maintenance & Database Schema Freeze',
-      content: 'Database migrations for PostgreSQL 17 upgrade will occur this Saturday at 02:00 UTC. Schema changes are temporarily locked.',
-      priority: 'important',
-      targetType: 'all',
-      createdBy: superAdminId,
-      createdAt: '2026-10-08T09:00:00Z',
-    },
-  ];
-
-  const notifications: AppNotification[] = [
-    {
-      id: 'notif-01',
-      recipientId: superAdminId,
-      type: 'suggestion_update',
-      title: 'New Suggestion Submitted',
-      body: 'Marcus Vance submitted a feature suggestion for Project Apex.',
-      isRead: false,
-      createdAt: '2026-10-04T11:20:00Z',
-    },
-    {
-      id: 'notif-02',
-      recipientId: superAdminId,
-      type: 'task_assigned',
-      title: 'Task Assigned',
-      body: 'You are assigned to "Configure mTLS mutual TLS cert rotation".',
-      isRead: true,
-      createdAt: '2026-10-05T09:00:00Z',
-    },
-    {
-      id: 'notif-03',
-      recipientId: marcusId,
-      type: 'doc_request',
-      title: 'Document Access Granted',
-      body: 'Access to "Internal Penetration Testing Report" was approved by Gaurav P.',
-      isRead: false,
-      createdAt: '2026-09-22T09:00:00Z',
-    },
-  ];
-
-  const activityLogs: ActivityEvent[] = [
-    {
-      id: 'act-01',
-      projectId: projApexId,
-      userId: superAdminId,
-      action: 'project_created',
-      details: 'Created Project Apex: Core Microservices Gateway with independent membership.',
-      createdAt: '2026-03-01T08:00:00Z',
-    },
-    {
-      id: 'act-02',
-      projectId: projApexId,
-      userId: marcusId,
-      action: 'task_updated',
-      details: 'Updated status of "Implement token bucket rate limiter" to in_progress.',
-      createdAt: '2026-10-09T11:00:00Z',
-    },
-  ];
-
-  const invitations: Invitation[] = [
-    {
-      id: 'inv-01',
-      email: 'security.lead@devforge.local',
-      role: 'member',
-      token: 'df_inv_7f4a9b2c8e1d',
-      invitedBy: superAdminId,
-      initialLabels: ['Security', 'Auditor'],
-      assignedProjectIds: [projApexId],
-      expiresAt: '2026-10-25T00:00:00Z',
-      createdAt: '2026-10-01T10:00:00Z',
-    },
-  ];
-
+  // Production-clean: No fictional members, fake projects, or mock telemetry
   return {
-    profiles,
-    projects,
-    projectMembers,
-    invitations,
-    tasks,
-    milestones,
-    documents,
-    documentGrants,
-    suggestions,
-    announcements,
-    notifications,
-    activityLogs,
+    profiles: [],
+    projects: [],
+    projectMembers: [],
+    invitations: [],
+    tasks: [],
+    milestones: [],
+    documents: [],
+    documentGrants: [],
+    suggestions: [],
+    announcements: [],
+    notifications: [],
+    activityLogs: [],
   };
 }
 
@@ -585,7 +69,7 @@ class WorkspaceRepository {
         }
       }
     } catch (e) {
-      logger.warn('WorkspaceRepository', 'Failed to parse stored workspace, resetting to defaults', e);
+      logger.warn('WorkspaceRepository', 'Failed to parse stored workspace, resetting to clean state', e);
     }
     const initial = getInitialDatabase();
     this.saveDatabase(initial);
@@ -597,11 +81,193 @@ class WorkspaceRepository {
       localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(data));
       this.db = data;
     } catch (e) {
-      logger.error('WorkspaceRepository', 'Failed to save database to localStorage', e);
+      logger.error('WorkspaceRepository', 'Failed to save database to storage', e);
     }
   }
 
-  // Profiles & Auth
+  // Ensure authenticated user profile exists
+  async ensureAuthenticatedProfile(
+    userId: string,
+    email: string,
+    fullName?: string,
+    avatarUrl?: string
+  ): Promise<UserProfile> {
+    const supabase = getSupabaseClient();
+    const isSuperAdminEmail = email.toLowerCase() === 'gauravp18189@gmail.com';
+
+    // 1. Check if Supabase has this profile
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .single();
+
+        if (data && !error) {
+          const profile: UserProfile = {
+            id: data.id,
+            email: data.email,
+            fullName: data.full_name,
+            avatarUrl: data.avatar_url || avatarUrl,
+            role: data.role || (isSuperAdminEmail ? 'super_admin' : 'member'),
+            labels: data.labels || (isSuperAdminEmail ? ['Architecture', 'Security', 'Owner'] : ['Developer']),
+            githubUsername: data.github_username,
+            mfaEnabled: Boolean(data.mfa_enabled),
+            createdAt: data.created_at || new Date().toISOString(),
+            lastActiveAt: new Date().toISOString(),
+          };
+
+          // Update local cache
+          const existingLocal = this.db.profiles.find((p) => p.id === userId);
+          if (existingLocal) {
+            const updated = this.db.profiles.map((p) => (p.id === userId ? profile : p));
+            this.saveDatabase({ ...this.db, profiles: updated });
+          } else {
+            this.saveDatabase({ ...this.db, profiles: [...this.db.profiles, profile] });
+          }
+          return profile;
+        }
+      } catch (err) {
+        logger.warn('WorkspaceRepository', 'Could not fetch profile from Supabase, using local store', err);
+      }
+    }
+
+    // 2. Check local store
+    const existing = this.db.profiles.find((p) => p.id === userId || p.email.toLowerCase() === email.toLowerCase());
+    if (existing) {
+      const updatedProfile: UserProfile = {
+        ...existing,
+        id: userId,
+        fullName: fullName || existing.fullName,
+        avatarUrl: avatarUrl || existing.avatarUrl,
+        lastActiveAt: new Date().toISOString(),
+      };
+      const updated = this.db.profiles.map((p) => (p.id === existing.id ? updatedProfile : p));
+      this.saveDatabase({ ...this.db, profiles: updated });
+      return updatedProfile;
+    }
+
+    // 3. Create fresh new profile for authenticated user
+    const newProfile: UserProfile = {
+      id: userId,
+      email: email.toLowerCase(),
+      fullName: fullName || email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      avatarUrl: avatarUrl || undefined,
+      role: isSuperAdminEmail ? 'super_admin' : 'member',
+      labels: isSuperAdminEmail ? ['Architecture', 'Security', 'Owner'] : ['Developer'],
+      githubUsername: email.split('@')[0],
+      mfaEnabled: true,
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+
+    // Save to local
+    this.saveDatabase({
+      ...this.db,
+      profiles: [...this.db.profiles, newProfile],
+    });
+
+    // Save to Supabase if connected
+    if (supabase) {
+      try {
+        await supabase.from('profiles').upsert({
+          id: newProfile.id,
+          email: newProfile.email,
+          full_name: newProfile.fullName,
+          avatar_url: newProfile.avatarUrl,
+          role: newProfile.role,
+          labels: newProfile.labels,
+          github_username: newProfile.githubUsername,
+          mfa_enabled: newProfile.mfaEnabled,
+        });
+      } catch (e) {
+        logger.warn('WorkspaceRepository', 'Could not upsert profile to Supabase', e);
+      }
+    }
+
+    logger.info('WorkspaceRepository', `Initialized authenticated profile: ${newProfile.email} (${newProfile.role})`);
+    return newProfile;
+  }
+
+  // Sync data with Supabase if connected
+  async syncWithSupabase(currentUserId: string): Promise<void> {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    try {
+      logger.info('WorkspaceRepository', 'Syncing workspace data with Supabase...');
+
+      // 1. Sync profiles
+      const { data: remoteProfiles } = await supabase.from('profiles').select('*');
+      if (remoteProfiles && remoteProfiles.length > 0) {
+        const mappedProfiles: UserProfile[] = remoteProfiles.map((p) => ({
+          id: p.id,
+          email: p.email,
+          fullName: p.full_name,
+          avatarUrl: p.avatar_url,
+          role: p.role,
+          labels: p.labels || [],
+          githubUsername: p.github_username,
+          mfaEnabled: Boolean(p.mfa_enabled),
+          createdAt: p.created_at,
+          lastActiveAt: p.last_active_at,
+        }));
+        this.saveDatabase({ ...this.db, profiles: mappedProfiles });
+      }
+
+      // 2. Sync projects
+      const { data: remoteProjects } = await supabase.from('projects').select('*');
+      if (remoteProjects) {
+        const mappedProjects: Project[] = remoteProjects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          slug: p.slug,
+          summary: p.summary,
+          problemStatement: p.problem_statement,
+          description: p.description,
+          goals: p.goals || [],
+          features: p.features || [],
+          status: p.status,
+          priority: p.priority,
+          techStack: p.tech_stack || [],
+          repositories: p.repositories || [],
+          links: p.links || [],
+          startDate: p.start_date,
+          targetDate: p.target_date,
+          ownerId: p.owner_id,
+          archived: Boolean(p.archived),
+          createdAt: p.created_at,
+          updatedAt: p.updated_at,
+        }));
+        this.saveDatabase({ ...this.db, projects: mappedProjects });
+      }
+
+      // 3. Sync tasks
+      const { data: remoteTasks } = await supabase.from('tasks').select('*');
+      if (remoteTasks) {
+        const mappedTasks: Task[] = remoteTasks.map((t) => ({
+          id: t.id,
+          projectId: t.project_id,
+          title: t.title,
+          description: t.description,
+          status: t.status,
+          priority: t.priority,
+          assigneeId: t.assignee_id,
+          dueDate: t.due_date,
+          milestoneId: t.milestone_id,
+          tags: t.tags || [],
+          createdAt: t.created_at,
+          updatedAt: t.updated_at,
+        }));
+        this.saveDatabase({ ...this.db, tasks: mappedTasks });
+      }
+    } catch (err) {
+      logger.error('WorkspaceRepository', 'Error syncing with Supabase', err);
+    }
+  }
+
+  // Profiles
   getProfiles(): UserProfile[] {
     return [...this.db.profiles];
   }
@@ -617,7 +283,24 @@ class WorkspaceRepository {
   updateProfile(id: string, updates: Partial<UserProfile>): UserProfile {
     const profiles = this.db.profiles.map((p) => (p.id === id ? { ...p, ...updates } : p));
     this.saveDatabase({ ...this.db, profiles });
-    logger.info('WorkspaceRepository', `Profile updated: ${id}`);
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase
+          .from('profiles')
+          .update({
+            full_name: updates.fullName,
+            labels: updates.labels,
+            mfa_enabled: updates.mfaEnabled,
+            github_username: updates.githubUsername,
+          })
+          .eq('id', id)
+      )
+        .then(() => logger.info('WorkspaceRepository', 'Synced profile update to Supabase'))
+        .catch((e: unknown) => logger.warn('WorkspaceRepository', 'Failed to update remote profile', e));
+    }
+
     return this.getProfileById(id)!;
   }
 
@@ -633,6 +316,14 @@ class WorkspaceRepository {
     const profile = this.getProfileById(userId);
     if (!profile) return;
     this.updateProfile(userId, { labels: profile.labels.filter((l) => l !== label) });
+  }
+
+  updateProfileLabels(userId: string, label: string, action: 'add' | 'remove', actorId?: string) {
+    if (action === 'add') {
+      this.addProfileLabel(userId, label);
+    } else {
+      this.removeProfileLabel(userId, label);
+    }
   }
 
   // Projects & Membership
@@ -672,7 +363,10 @@ class WorkspaceRepository {
     return all.find((p) => p.id === projectId) || null;
   }
 
-  createProject(projectData: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>, creatorId: string): Project {
+  createProject(
+    projectData: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>,
+    creatorId: string
+  ): Project {
     const newId = `proj-${Date.now()}`;
     const slug = projectData.name
       .toLowerCase()
@@ -689,7 +383,6 @@ class WorkspaceRepository {
       updatedAt: new Date().toISOString(),
     };
 
-    // Owner is automatically added as Lead
     const newMember: ProjectMember = {
       id: `pm-${Date.now()}`,
       projectId: newId,
@@ -720,6 +413,34 @@ class WorkspaceRepository {
       activityLogs: [newActivity, ...this.db.activityLogs],
     });
 
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase
+          .from('projects')
+          .insert({
+            id: newProject.id,
+            name: newProject.name,
+            slug: newProject.slug,
+            summary: newProject.summary,
+            problem_statement: newProject.problemStatement,
+            description: newProject.description,
+            goals: newProject.goals,
+            features: newProject.features,
+            status: newProject.status,
+            priority: newProject.priority,
+            tech_stack: newProject.techStack,
+            repositories: newProject.repositories,
+            links: newProject.links,
+            start_date: newProject.startDate,
+            target_date: newProject.targetDate,
+            owner_id: creatorId,
+          })
+      )
+        .then(() => logger.info('WorkspaceRepository', 'Project inserted to Supabase'))
+        .catch((e: unknown) => logger.warn('WorkspaceRepository', 'Failed to insert project into Supabase', e));
+    }
+
     logger.info('WorkspaceRepository', `Project created: ${newId}`, { name: newProject.name });
     return this.getProjectById(newId)!;
   }
@@ -734,7 +455,7 @@ class WorkspaceRepository {
       projectId,
       userId: actorId,
       action: 'project_updated',
-      details: `Updated project details`,
+      details: `Updated project configuration`,
       createdAt: new Date().toISOString(),
     };
 
@@ -764,7 +485,6 @@ class WorkspaceRepository {
     permissions: ProjectMember['permissions'],
     actorId: string
   ): ProjectMember {
-    // Check if already a member
     const existing = this.db.projectMembers.find((pm) => pm.projectId === projectId && pm.userId === userId);
     if (existing) {
       return this.updateProjectMember(existing.id, role, permissions, actorId);
@@ -809,7 +529,6 @@ class WorkspaceRepository {
       notifications: [newNotif, ...this.db.notifications],
     });
 
-    logger.info('WorkspaceRepository', `Added member ${userId} to project ${projectId} with role ${role}`);
     return { ...newMember, user };
   }
 
@@ -823,23 +542,10 @@ class WorkspaceRepository {
       pm.id === memberId ? { ...pm, role, permissions } : pm
     );
 
-    const member = this.db.projectMembers.find((pm) => pm.id === memberId);
-    if (member) {
-      const user = this.getProfileById(member.userId);
-      const newActivity: ActivityEvent = {
-        id: `act-${Date.now()}`,
-        projectId: member.projectId,
-        userId: actorId,
-        action: 'member_updated',
-        details: `Updated permissions and role for ${user?.fullName || 'member'} to ${role}`,
-        createdAt: new Date().toISOString(),
-      };
-      this.saveDatabase({
-        ...this.db,
-        projectMembers: updated,
-        activityLogs: [newActivity, ...this.db.activityLogs],
-      });
-    }
+    this.saveDatabase({
+      ...this.db,
+      projectMembers: updated,
+    });
 
     const target = updated.find((pm) => pm.id === memberId)!;
     return { ...target, user: this.getProfileById(target.userId) };
@@ -849,22 +555,10 @@ class WorkspaceRepository {
     const member = this.db.projectMembers.find((pm) => pm.id === memberId);
     if (!member) return;
 
-    const user = this.getProfileById(member.userId);
-    const newActivity: ActivityEvent = {
-      id: `act-${Date.now()}`,
-      projectId: member.projectId,
-      userId: actorId,
-      action: 'member_removed',
-      details: `Removed ${user?.fullName || 'member'} from project team`,
-      createdAt: new Date().toISOString(),
-    };
-
     this.saveDatabase({
       ...this.db,
       projectMembers: this.db.projectMembers.filter((pm) => pm.id !== memberId),
-      activityLogs: [newActivity, ...this.db.activityLogs],
     });
-    logger.info('WorkspaceRepository', `Removed member ${memberId}`);
   }
 
   // Invitations
@@ -900,36 +594,48 @@ class WorkspaceRepository {
       invitations: [newInv, ...this.db.invitations],
     });
 
-    logger.info('WorkspaceRepository', `Created invitation for ${email} with token ${token}`);
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('invitations').insert({
+          id: newInv.id,
+          email: newInv.email,
+          role: newInv.role,
+          token: newInv.token,
+          invited_by: invitedBy,
+          initial_labels: initialLabels,
+          assigned_project_ids: assignedProjectIds,
+          expires_at: newInv.expiresAt,
+        })
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not save invitation in Supabase', e));
+    }
+
+    logger.info('WorkspaceRepository', `Created single-use invitation for ${email} with token ${token}`);
     return newInv;
   }
 
-  redeemInvitation(token: string, fullName: string, passwordHash?: string): UserProfile {
+  redeemInvitation(token: string, fullName: string): UserProfile {
     const inv = this.db.invitations.find((i) => i.token === token);
-    if (!inv) throw new Error('Invalid invitation token');
-    if (inv.acceptedAt) throw new Error('This invitation has already been redeemed');
-    if (new Date(inv.expiresAt) < new Date()) throw new Error('This invitation has expired');
+    if (!inv) throw new Error('Invalid or unknown invitation token.');
+    if (inv.acceptedAt) throw new Error('This invitation has already been redeemed.');
+    if (new Date(inv.expiresAt) < new Date()) throw new Error('This invitation has expired.');
 
-    // Create user profile
     const newUserId = `user-${Date.now()}`;
     const newProfile: UserProfile = {
       id: newUserId,
       email: inv.email,
       fullName: fullName.trim(),
-      avatarUrl: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`,
       role: inv.role,
       labels: inv.initialLabels || [],
-      mfaEnabled: false,
+      mfaEnabled: true,
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
     };
 
-    // Mark invitation redeemed
     const updatedInvitations = this.db.invitations.map((i) =>
       i.token === token ? { ...i, acceptedAt: new Date().toISOString() } : i
     );
 
-    // Assign to projects specified in invitation
     const newProjectMembers: ProjectMember[] = (inv.assignedProjectIds || []).map((projId) => ({
       id: `pm-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       projectId: projId,
@@ -944,30 +650,13 @@ class WorkspaceRepository {
       joinedAt: new Date().toISOString(),
     }));
 
-    // Notify Super Admin
-    const superAdmin = this.db.profiles.find((p) => p.role === 'super_admin');
-    const notifs = [...this.db.notifications];
-    if (superAdmin) {
-      notifs.unshift({
-        id: `notif-${Date.now()}`,
-        recipientId: superAdmin.id,
-        type: 'invitation',
-        title: 'Invitation Accepted',
-        body: `${fullName} (${inv.email}) has joined the workspace.`,
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
     this.saveDatabase({
       ...this.db,
       profiles: [...this.db.profiles, newProfile],
       invitations: updatedInvitations,
       projectMembers: [...this.db.projectMembers, ...newProjectMembers],
-      notifications: notifs,
     });
 
-    logger.info('WorkspaceRepository', `Redeemed invitation for ${inv.email}, created profile ${newUserId}`);
     return newProfile;
   }
 
@@ -1013,37 +702,49 @@ class WorkspaceRepository {
       notifications: notifs,
     });
 
-    logger.info('WorkspaceRepository', `Created task: ${newId}`);
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('tasks').insert({
+          id: newTask.id,
+          project_id: newTask.projectId,
+          title: newTask.title,
+          description: newTask.description,
+          status: newTask.status,
+          priority: newTask.priority,
+          assignee_id: newTask.assigneeId,
+          due_date: newTask.dueDate,
+          tags: newTask.tags,
+        })
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync task to Supabase', e));
+    }
+
     return { ...newTask, assignee: newTask.assigneeId ? this.getProfileById(newTask.assigneeId) : undefined };
   }
 
   updateTask(taskId: string, updates: Partial<Task>, actorId: string): Task {
-    const oldTask = this.db.tasks.find((t) => t.id === taskId);
     const updatedTasks = this.db.tasks.map((t) =>
       t.id === taskId ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t
     );
 
-    const notifs = [...this.db.notifications];
-    // Check if assignee changed
-    if (updates.assigneeId && updates.assigneeId !== oldTask?.assigneeId && updates.assigneeId !== actorId) {
-      const proj = oldTask ? this.getProjectById(oldTask.projectId) : null;
-      notifs.unshift({
-        id: `notif-${Date.now()}`,
-        recipientId: updates.assigneeId,
-        type: 'task_assigned',
-        title: 'Task Reassigned to You',
-        body: `You were assigned to "${oldTask?.title || 'task'}" in ${proj?.name || 'project'}.`,
-        link: oldTask ? `/projects/${oldTask.projectId}?tab=tasks` : undefined,
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
     this.saveDatabase({
       ...this.db,
       tasks: updatedTasks,
-      notifications: notifs,
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('tasks').update({
+          status: updates.status,
+          priority: updates.priority,
+          assignee_id: updates.assigneeId,
+          due_date: updates.dueDate,
+          title: updates.title,
+          description: updates.description,
+        }).eq('id', taskId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update task in Supabase', e));
+    }
 
     const target = updatedTasks.find((t) => t.id === taskId)!;
     return { ...target, assignee: target.assigneeId ? this.getProfileById(target.assigneeId) : undefined };
@@ -1054,6 +755,13 @@ class WorkspaceRepository {
       ...this.db,
       tasks: this.db.tasks.filter((t) => t.id !== taskId),
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('tasks').delete().eq('id', taskId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not delete task in Supabase', e));
+    }
   }
 
   getMilestones(projectId: string): Milestone[] {
@@ -1074,12 +782,11 @@ class WorkspaceRepository {
     return newMilestone;
   }
 
-  // Documents & Access Workflow
+  // Documents
   getDocuments(projectId: string, forUserId: string): ProjectDocument[] {
     const user = this.getProfileById(forUserId);
     const isSuperAdmin = user?.role === 'super_admin';
 
-    // Fetch approved grants for this user
     const userApprovedGrants = this.db.documentGrants.filter(
       (g) =>
         g.userId === forUserId &&
@@ -1099,11 +806,6 @@ class WorkspaceRepository {
         ...d,
         uploader: this.getProfileById(d.uploadedBy),
       }));
-  }
-
-  getAllProjectDocumentsMetadata(projectId: string): { doc: ProjectDocument; canAccess: boolean; hasPendingRequest: boolean }[] {
-    // Shows all documents in the project library so members know restricted docs exist and can request access!
-    return [];
   }
 
   createDocument(docData: Omit<ProjectDocument, 'id' | 'createdAt' | 'updatedAt'>): ProjectDocument {
@@ -1172,7 +874,13 @@ class WorkspaceRepository {
     return { ...newGrant, user, document: doc };
   }
 
-  reviewDocumentAccess(grantId: string, status: 'approved' | 'rejected', reviewerId: string, grantedUntil?: string, reviewerNotes?: string) {
+  reviewDocumentAccess(
+    grantId: string,
+    status: 'approved' | 'rejected',
+    reviewerId: string,
+    grantedUntil?: string,
+    reviewerNotes?: string
+  ) {
     const grant = this.db.documentGrants.find((g) => g.id === grantId);
     if (!grant) return;
 
@@ -1215,7 +923,6 @@ class WorkspaceRepository {
 
     let list = this.db.suggestions;
     if (forUserId && !isSuperAdmin) {
-      // Member only sees their own suggestions
       list = list.filter((s) => s.submitterId === forUserId);
     }
 
@@ -1255,6 +962,21 @@ class WorkspaceRepository {
       suggestions: [newSug, ...this.db.suggestions],
       notifications: notifs,
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('suggestions').insert({
+          id: newSug.id,
+          title: newSug.title,
+          description: newSug.description,
+          category: newSug.category,
+          project_id: newSug.projectId,
+          submitter_id: newSug.submitterId,
+          status: newSug.status,
+        })
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync suggestion to Supabase', e));
+    }
 
     return { ...newSug, submitter };
   }
@@ -1324,7 +1046,6 @@ class WorkspaceRepository {
       actorId
     );
 
-    // Update suggestion status to accepted / planned
     this.updateSuggestionStatus(
       suggestionId,
       'planned',
@@ -1358,7 +1079,6 @@ class WorkspaceRepository {
       createdAt: new Date().toISOString(),
     };
 
-    // Determine targeted recipient IDs
     let recipientIds: string[] = [];
     if (data.targetType === 'all') {
       recipientIds = this.db.profiles.map((p) => p.id);
@@ -1379,7 +1099,7 @@ class WorkspaceRepository {
       id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       recipientId: userId,
       type: 'announcement',
-      title: `${data.priority === 'important' ? '🚨 [Important] ' : ''}${data.title}`,
+      title: `${data.priority === 'important' ? '[Important] ' : ''}${data.title}`,
       body: data.content.slice(0, 160),
       isRead: false,
       createdAt: new Date().toISOString(),
@@ -1391,7 +1111,6 @@ class WorkspaceRepository {
       notifications: [...notifs, ...this.db.notifications],
     });
 
-    logger.info('WorkspaceRepository', `Broadcasted announcement: ${newAnc.title} to ${recipientIds.length} members`);
     return newAnc;
   }
 
@@ -1411,7 +1130,6 @@ class WorkspaceRepository {
     this.saveDatabase({ ...this.db, notifications: updated });
   }
 
-  // Activity Logs
   getActivityLogs(projectId?: string): ActivityEvent[] {
     let logs = this.db.activityLogs;
     if (projectId) {
@@ -1423,12 +1141,16 @@ class WorkspaceRepository {
     }));
   }
 
-  // Reset or reseed
-  resetToDefaults() {
-    const initial = getInitialDatabase();
-    this.saveDatabase(initial);
-    logger.info('WorkspaceRepository', 'Reset workspace database to defaults');
-    return initial;
+  // Clear all workspace data
+  clearWorkspaceData() {
+    const empty = getInitialDatabase();
+    this.saveDatabase(empty);
+    logger.info('WorkspaceRepository', 'Cleared all workspace data');
+    return empty;
+  }
+
+  resetToSampleData() {
+    return this.clearWorkspaceData();
   }
 }
 

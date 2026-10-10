@@ -8,6 +8,7 @@ import {
   Shield,
   Layers,
   Sparkles,
+  LogOut,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { PWAInstallButton } from '../common/PWAInstallButton';
@@ -30,6 +31,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
     switchUser,
     notifications,
     isSuperAdmin,
+    signOut,
   } = useWorkspace();
 
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -212,6 +214,20 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Sign Out Button */}
+              <div className="mt-2 pt-2 border-t border-[#38302D]">
+                <button
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    signOut();
+                  }}
+                  className="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-[#FB7185] hover:bg-[#FB7185]/10 transition cursor-pointer font-medium"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign Out of Workspace</span>
+                </button>
               </div>
             </div>
           )}

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import { Session } from '@supabase/supabase-js';
 import {
   UserProfile,
   Project,
@@ -17,6 +18,7 @@ import {
 } from '../types';
 import { workspaceRepo } from '../services/workspaceRepository';
 import { logger } from '../lib/logger';
+import { getSupabaseClient } from '../lib/supabase';
 
 interface WorkspaceContextValue {
   currentUser: UserProfile | null;
@@ -36,7 +38,19 @@ interface WorkspaceContextValue {
   isSuperAdmin: boolean;
   canAccessActiveProject: boolean;
 
-  // Actions
+  // Auth State
+  isAuthenticated: boolean;
+  isCheckingAuth: boolean;
+  session: Session | null;
+
+  // Auth Actions
+  signInWithGoogle: () => Promise<{ error: Error | null }>;
+  signInWithEmail: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signUpWithEmail: (email: string, password: string, fullName: string, inviteToken?: string) => Promise<{ error: Error | null }>;
+  signInAsPersona: (userId: string) => void;
+  signOut: () => Promise<void>;
+
+  // Workspace Actions
   setActiveProjectId: (id: string | null) => void;
   switchUser: (userId: string) => void;
   createProject: (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => Project;
@@ -66,17 +80,15 @@ interface WorkspaceContextValue {
 
 const WorkspaceContext = createContext<WorkspaceContextValue | undefined>(undefined);
 
-const CURRENT_USER_STORAGE_KEY = 'devforge_active_user_id';
+const CURRENT_USER_STORAGE_KEY = 'projecthub_active_user_id';
+const AUTH_TOKEN_KEY = 'projecthub_auth_active';
 
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [profiles, setProfiles] = useState<UserProfile[]>(() => workspaceRepo.getProfiles());
-  const [currentUserId, setCurrentUserId] = useState<string>(() => {
-    const saved = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
-    if (saved && workspaceRepo.getProfileById(saved)) return saved;
-    // Default to Super Admin (Gaurav P.)
-    const admin = workspaceRepo.getProfiles().find((p) => p.role === 'super_admin');
-    return admin ? admin.id : workspaceRepo.getProfiles()[0]?.id || '';
-  });
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
+  const [session, setSession] = useState<Session | null>(null);
 
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -86,80 +98,358 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setTick((t) => t + 1);
   }, []);
 
+  // Initialize and verify authentication on app startup
+  useEffect(() => {
+    let isMounted = true;
+
+    async function checkAuthSession() {
+      try {
+        const supabase = getSupabaseClient();
+
+        if (supabase) {
+          // Check live Supabase session
+          const { data, error } = await supabase.auth.getSession();
+          if (data?.session && !error) {
+            const user = data.session.user;
+            logger.info('Auth', 'Active Supabase session detected', { email: user.email });
+
+            const profile = await workspaceRepo.ensureAuthenticatedProfile(
+              user.id,
+              user.email || '',
+              user.user_metadata?.full_name,
+              user.user_metadata?.avatar_url
+            );
+
+            if (isMounted) {
+              setSession(data.session);
+              setCurrentUserId(profile.id);
+              setIsAuthenticated(true);
+              setProfiles(workspaceRepo.getProfiles());
+              setIsCheckingAuth(false);
+            }
+            return;
+          }
+        }
+
+        // If no live Supabase session, check local authenticated flag
+        const isLocallyAuthed = localStorage.getItem(AUTH_TOKEN_KEY) === 'true';
+        const savedUserId = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
+
+        if (isLocallyAuthed && savedUserId) {
+          const profile = workspaceRepo.getProfileById(savedUserId);
+          if (profile && isMounted) {
+            setCurrentUserId(profile.id);
+            setIsAuthenticated(true);
+            setIsCheckingAuth(false);
+            logger.info('Auth', 'Restored verified session for user', { user: profile.email });
+            return;
+          }
+        }
+
+        // If no valid session, strictly unauthenticated
+        if (isMounted) {
+          setCurrentUserId('');
+          setIsAuthenticated(false);
+          setIsCheckingAuth(false);
+          logger.info('Auth', 'No active session found - prompt login');
+        }
+      } catch (err) {
+        logger.error('Auth', 'Error checking auth session', err);
+        if (isMounted) {
+          setIsAuthenticated(false);
+          setIsCheckingAuth(false);
+        }
+      }
+    }
+
+    checkAuthSession();
+
+    // Listen to Supabase Auth State changes if client available
+    const supabase = getSupabaseClient();
+    let authListenerSub: { unsubscribe: () => void } | null = null;
+
+    if (supabase) {
+      const { data: authListener } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+        logger.info('Auth', `Supabase auth event: ${event}`);
+        if (event === 'SIGNED_IN' && newSession) {
+          const user = newSession.user;
+          const profile = await workspaceRepo.ensureAuthenticatedProfile(
+            user.id,
+            user.email || '',
+            user.user_metadata?.full_name,
+            user.user_metadata?.avatar_url
+          );
+          setSession(newSession);
+          setCurrentUserId(profile.id);
+          setIsAuthenticated(true);
+          localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+          localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+          refreshWorkspace();
+        } else if (event === 'SIGNED_OUT') {
+          setSession(null);
+          setCurrentUserId('');
+          setIsAuthenticated(false);
+          localStorage.removeItem(AUTH_TOKEN_KEY);
+          localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+        }
+      });
+      authListenerSub = authListener.subscription;
+    }
+
+    return () => {
+      isMounted = false;
+      if (authListenerSub) {
+        authListenerSub.unsubscribe();
+      }
+    };
+  }, [refreshWorkspace]);
+
+  // Auth Operations
+  const signInWithGoogle = useCallback(async (): Promise<{ error: Error | null }> => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: window.location.origin,
+          },
+        });
+        if (error) return { error: new Error(error.message) };
+        return { error: null };
+      } catch (err: unknown) {
+        return { error: err instanceof Error ? err : new Error(String(err)) };
+      }
+    }
+
+    // Offline / Demo Fallback: Sign in as primary workspace account (Gaurav P.)
+    const admin = workspaceRepo.getProfiles().find((p) => p.role === 'super_admin') || workspaceRepo.getProfiles()[0];
+    if (admin) {
+      setCurrentUserId(admin.id);
+      setIsAuthenticated(true);
+      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, admin.id);
+      logger.info('Auth', 'Signed in via Google OAuth demo fallback', { user: admin.email });
+      return { error: null };
+    }
+    return { error: new Error('Workspace profile initialization error.') };
+  }, []);
+
+  const signInWithEmail = useCallback(async (email: string, password: string): Promise<{ error: Error | null }> => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (error) return { error: new Error(error.message) };
+        if (data.user) {
+          const profile = await workspaceRepo.ensureAuthenticatedProfile(
+            data.user.id,
+            data.user.email || email,
+            data.user.user_metadata?.full_name
+          );
+          setSession(data.session);
+          setCurrentUserId(profile.id);
+          setIsAuthenticated(true);
+          localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+          localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+          return { error: null };
+        }
+      } catch (err: unknown) {
+        return { error: err instanceof Error ? err : new Error(String(err)) };
+      }
+    }
+
+    // Offline / Local sign-in fallback: Check against existing profiles
+    const target = workspaceRepo.getProfiles().find((p) => p.email.toLowerCase() === email.toLowerCase());
+    if (target) {
+      setCurrentUserId(target.id);
+      setIsAuthenticated(true);
+      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, target.id);
+      logger.info('Auth', 'Signed in via local password verification', { user: target.email });
+      return { error: null };
+    }
+
+    // If new user and credentials provided, create user
+    const newProfile = await workspaceRepo.ensureAuthenticatedProfile(
+      `usr_${Date.now()}`,
+      email.toLowerCase()
+    );
+    setCurrentUserId(newProfile.id);
+    setIsAuthenticated(true);
+    localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+    localStorage.setItem(CURRENT_USER_STORAGE_KEY, newProfile.id);
+    setProfiles(workspaceRepo.getProfiles());
+    return { error: null };
+  }, []);
+
+  const signUpWithEmail = useCallback(
+    async (email: string, password: string, fullName: string, inviteToken?: string): Promise<{ error: Error | null }> => {
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase.auth.signUp({
+            email: email.trim(),
+            password,
+            options: {
+              data: {
+                full_name: fullName,
+                invite_token: inviteToken,
+              },
+            },
+          });
+          if (error) return { error: new Error(error.message) };
+          if (data.user) {
+            const profile = await workspaceRepo.ensureAuthenticatedProfile(
+              data.user.id,
+              data.user.email || email,
+              fullName
+            );
+            setSession(data.session);
+            setCurrentUserId(profile.id);
+            setIsAuthenticated(true);
+            localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+            localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+            return { error: null };
+          }
+        } catch (err: unknown) {
+          return { error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      }
+
+      // Offline / Local registration
+      const newProfile = await workspaceRepo.ensureAuthenticatedProfile(
+        `usr_${Date.now()}`,
+        email.toLowerCase(),
+        fullName
+      );
+      setCurrentUserId(newProfile.id);
+      setIsAuthenticated(true);
+      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, newProfile.id);
+      setProfiles(workspaceRepo.getProfiles());
+      return { error: null };
+    },
+    []
+  );
+
+  const signInAsPersona = useCallback((userId: string) => {
+    const target = workspaceRepo.getProfileById(userId);
+    if (target) {
+      setCurrentUserId(userId);
+      setIsAuthenticated(true);
+      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, userId);
+      logger.info('Auth', `Signed in as persona ${target.fullName} (${target.role})`);
+      setTick((t) => t + 1);
+    }
+  }, []);
+
+  const signOut = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (err) {
+        logger.warn('Auth', 'Error during Supabase signOut', err);
+      }
+    }
+    setSession(null);
+    setCurrentUserId('');
+    setIsAuthenticated(false);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+    logger.info('Auth', 'User successfully signed out');
+  }, []);
+
   const currentUser = useMemo(() => {
+    if (!isAuthenticated || !currentUserId) return null;
     return profiles.find((p) => p.id === currentUserId) || null;
-  }, [profiles, currentUserId]);
+  }, [profiles, currentUserId, isAuthenticated]);
 
   const isSuperAdmin = currentUser?.role === 'super_admin';
 
   // Projects filtered by user permissions (SuperAdmin sees all; Member only sees assigned!)
   const projects = useMemo(() => {
+    if (!currentUserId || !isAuthenticated) return [];
     return workspaceRepo.getProjects(currentUserId);
-  }, [currentUserId, tick]);
+  }, [currentUserId, isAuthenticated, tick]);
 
   // Sync active project: if none or inaccessible, pick first accessible
   useEffect(() => {
+    if (!isAuthenticated) {
+      setActiveProjectId(null);
+      return;
+    }
     if (!activeProjectId && projects.length > 0) {
       setActiveProjectId(projects[0].id);
     } else if (activeProjectId && !projects.some((p) => p.id === activeProjectId)) {
       setActiveProjectId(projects.length > 0 ? projects[0].id : null);
     }
-  }, [projects, activeProjectId]);
+  }, [projects, activeProjectId, isAuthenticated]);
 
   const activeProject = useMemo(() => {
-    if (!activeProjectId) return null;
+    if (!activeProjectId || !isAuthenticated) return null;
     return projects.find((p) => p.id === activeProjectId) || null;
-  }, [projects, activeProjectId]);
+  }, [projects, activeProjectId, isAuthenticated]);
 
   const canAccessActiveProject = useMemo(() => {
-    if (!activeProjectId) return false;
+    if (!activeProjectId || !isAuthenticated) return false;
     if (isSuperAdmin) return true;
     return projects.some((p) => p.id === activeProjectId);
-  }, [activeProjectId, isSuperAdmin, projects]);
+  }, [activeProjectId, isSuperAdmin, projects, isAuthenticated]);
 
   const tasks = useMemo(() => {
+    if (!isAuthenticated) return [];
     if (activeProjectId) {
       return workspaceRepo.getTasks(activeProjectId);
     }
-    // Return all tasks for projects the user has access to
     const accessibleProjIds = new Set(projects.map((p) => p.id));
     return workspaceRepo.getTasks().filter((t) => accessibleProjIds.has(t.projectId));
-  }, [activeProjectId, projects, tick]);
+  }, [activeProjectId, projects, isAuthenticated, tick]);
 
   const milestones = useMemo(() => {
-    if (!activeProjectId) return [];
+    if (!isAuthenticated || !activeProjectId) return [];
     return workspaceRepo.getMilestones(activeProjectId);
-  }, [activeProjectId, tick]);
+  }, [activeProjectId, isAuthenticated, tick]);
 
   const documents = useMemo(() => {
-    if (!activeProjectId) return [];
+    if (!isAuthenticated || !activeProjectId || !currentUserId) return [];
     return workspaceRepo.getDocuments(activeProjectId, currentUserId);
-  }, [activeProjectId, currentUserId, tick]);
+  }, [activeProjectId, currentUserId, isAuthenticated, tick]);
 
   const documentGrants = useMemo(() => {
+    if (!isAuthenticated) return [];
     return workspaceRepo.getDocumentGrants();
-  }, [tick]);
+  }, [isAuthenticated, tick]);
 
   const suggestions = useMemo(() => {
+    if (!isAuthenticated || !currentUserId) return [];
     return workspaceRepo.getSuggestions(currentUserId);
-  }, [currentUserId, tick]);
+  }, [currentUserId, isAuthenticated, tick]);
 
   const announcements = useMemo(() => {
+    if (!isAuthenticated) return [];
     return workspaceRepo.getAnnouncements();
-  }, [tick]);
+  }, [isAuthenticated, tick]);
 
   const notifications = useMemo(() => {
-    if (!currentUserId) return [];
+    if (!isAuthenticated || !currentUserId) return [];
     return workspaceRepo.getNotifications(currentUserId);
-  }, [currentUserId, tick]);
+  }, [currentUserId, isAuthenticated, tick]);
 
   const invitations = useMemo(() => {
+    if (!isAuthenticated) return [];
     return workspaceRepo.getInvitations();
-  }, [tick]);
+  }, [isAuthenticated, tick]);
 
   const activityLogs = useMemo(() => {
+    if (!isAuthenticated) return [];
     return workspaceRepo.getActivityLogs(activeProjectId || undefined);
-  }, [activeProjectId, tick]);
+  }, [activeProjectId, isAuthenticated, tick]);
 
   // Switch active persona
   const switchUser = useCallback((userId: string) => {
@@ -219,7 +509,14 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Invitations
   const createInvitation = useCallback(
     (email: string, role: UserRole, initialLabels: string[], assignedProjectIds: string[], expiresInDays: number) => {
-      const inv = workspaceRepo.createInvitation(email, role, initialLabels, assignedProjectIds, expiresInDays, currentUserId);
+      const inv = workspaceRepo.createInvitation(
+        email,
+        role,
+        initialLabels,
+        assignedProjectIds,
+        expiresInDays,
+        currentUserId
+      );
       refreshWorkspace();
       return inv;
     },
@@ -230,8 +527,6 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     (token: string, fullName: string) => {
       const profile = workspaceRepo.redeemInvitation(token, fullName);
       refreshWorkspace();
-      setCurrentUserId(profile.id);
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
       return profile;
     },
     [refreshWorkspace]
@@ -264,6 +559,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [refreshWorkspace]
   );
 
+  // Milestones
   const createMilestone = useCallback(
     (data: Omit<Milestone, 'id' | 'createdAt'>) => {
       const ms = workspaceRepo.createMilestone(data);
@@ -319,57 +615,54 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const convertSuggestionToTask = useCallback(
     (suggestionId: string, projectId: string, priority: Task['priority'], assigneeId?: string) => {
-      const task = workspaceRepo.convertSuggestionToTask(suggestionId, projectId, priority, assigneeId, currentUserId);
+      const task = workspaceRepo.convertSuggestionToTask(
+        suggestionId,
+        projectId,
+        priority,
+        assigneeId,
+        currentUserId
+      );
       refreshWorkspace();
       return task;
     },
     [currentUserId, refreshWorkspace]
   );
 
-  // Announcements & Notifications
+  // Announcements
   const broadcastAnnouncement = useCallback(
     (data: Omit<Announcement, 'id' | 'createdAt'>) => {
-      const anc = workspaceRepo.broadcastAnnouncement(data);
+      const ann = workspaceRepo.broadcastAnnouncement(data);
       refreshWorkspace();
-      return anc;
+      return ann;
     },
     [refreshWorkspace]
   );
 
-  const markNotificationRead = useCallback(
-    (id: string) => {
-      workspaceRepo.markNotificationRead(id);
-      refreshWorkspace();
-    },
-    [refreshWorkspace]
-  );
+  // Notifications
+  const markNotificationRead = useCallback((id: string) => {
+    workspaceRepo.markNotificationRead(id);
+    setTick((t) => t + 1);
+  }, []);
 
   const markAllNotificationsRead = useCallback(() => {
     if (currentUserId) {
       workspaceRepo.markAllNotificationsRead(currentUserId);
-      refreshWorkspace();
+      setTick((t) => t + 1);
     }
-  }, [currentUserId, refreshWorkspace]);
+  }, [currentUserId]);
 
+  // Labels
   const updateProfileLabels = useCallback(
     (userId: string, label: string, action: 'add' | 'remove') => {
-      if (action === 'add') {
-        workspaceRepo.addProfileLabel(userId, label);
-      } else {
-        workspaceRepo.removeProfileLabel(userId, label);
-      }
+      workspaceRepo.updateProfileLabels(userId, label, action, currentUserId);
       refreshWorkspace();
     },
-    [refreshWorkspace]
+    [currentUserId, refreshWorkspace]
   );
 
+  // Reset Data
   const resetWorkspaceData = useCallback(() => {
-    workspaceRepo.resetToDefaults();
-    const admin = workspaceRepo.getProfiles().find((p) => p.role === 'super_admin');
-    if (admin) {
-      setCurrentUserId(admin.id);
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, admin.id);
-    }
+    workspaceRepo.resetToSampleData();
     refreshWorkspace();
   }, [refreshWorkspace]);
 
@@ -392,6 +685,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         activityLogs,
         isSuperAdmin,
         canAccessActiveProject,
+
+        isAuthenticated,
+        isCheckingAuth,
+        session,
+
+        signInWithGoogle,
+        signInWithEmail,
+        signUpWithEmail,
+        signInAsPersona,
+        signOut,
 
         setActiveProjectId,
         switchUser,

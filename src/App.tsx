@@ -16,10 +16,12 @@ import { TeamDirectory } from './components/team/TeamDirectory';
 import { AnnouncementsView } from './components/announcements/AnnouncementsView';
 import { SecurityView } from './components/security/SecurityView';
 import { SettingsView } from './components/settings/SettingsView';
+import { AuthScreen } from './components/auth/AuthScreen';
+import { LoadingScreen } from './components/auth/LoadingScreen';
 
 const WorkspaceShell: React.FC = () => {
-  // Default selected navigation item is 'team' as requested in prompt Section 5
-  const [currentView, setCurrentView] = useState<NavView>('team');
+  // Default selected navigation item after authenticated is 'overview' or 'team'
+  const [currentView, setCurrentView] = useState<NavView>('overview');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
@@ -113,10 +115,27 @@ const WorkspaceShell: React.FC = () => {
   );
 };
 
+const ProtectedAppRouter: React.FC = () => {
+  const { isAuthenticated, isCheckingAuth, currentUser } = useWorkspace();
+
+  // Phase 2 Step 3: While checking the session, display a polished branded loading screen
+  if (isCheckingAuth) {
+    return <LoadingScreen message="Verifying session and security tokens..." />;
+  }
+
+  // Phase 2 Step 4: If no valid session exists, show the login screen
+  if (!isAuthenticated || !currentUser) {
+    return <AuthScreen />;
+  }
+
+  // Phase 2 Step 8: Only after successful authentication, display the protected workspace
+  return <WorkspaceShell />;
+};
+
 export default function App() {
   return (
     <WorkspaceProvider>
-      <WorkspaceShell />
+      <ProtectedAppRouter />
     </WorkspaceProvider>
   );
 }

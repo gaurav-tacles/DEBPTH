@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient, Session, User } from '@supabase/supabase-js';
 import { logger } from './logger';
 
 export interface SupabaseConfig {
@@ -6,8 +6,8 @@ export interface SupabaseConfig {
   anonKey: string;
 }
 
-const STORAGE_KEY_URL = 'devforge_supabase_url';
-const STORAGE_KEY_KEY = 'devforge_supabase_key';
+const STORAGE_KEY_URL = 'projecthub_supabase_url';
+const STORAGE_KEY_KEY = 'projecthub_supabase_key';
 
 export function getStoredSupabaseConfig(): SupabaseConfig {
   const envUrl = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -22,6 +22,17 @@ export function getStoredSupabaseConfig(): SupabaseConfig {
   };
 }
 
+export function isSupabaseConfigured(): boolean {
+  const { url, anonKey } = getStoredSupabaseConfig();
+  return Boolean(
+    url &&
+    anonKey &&
+    url.startsWith('http') &&
+    url !== 'https://your-project-id.supabase.co' &&
+    anonKey !== 'your-anon-public-key'
+  );
+}
+
 export function saveSupabaseConfig(url: string, anonKey: string) {
   if (url) localStorage.setItem(STORAGE_KEY_URL, url);
   else localStorage.removeItem(STORAGE_KEY_URL);
@@ -29,6 +40,7 @@ export function saveSupabaseConfig(url: string, anonKey: string) {
   if (anonKey) localStorage.setItem(STORAGE_KEY_KEY, anonKey);
   else localStorage.removeItem(STORAGE_KEY_KEY);
 
+  cachedClient = null;
   logger.info('SupabaseConfig', 'Updated Supabase credentials configuration');
 }
 
@@ -36,7 +48,7 @@ let cachedClient: SupabaseClient | null = null;
 
 export function getSupabaseClient(): SupabaseClient | null {
   const { url, anonKey } = getStoredSupabaseConfig();
-  if (!url || !anonKey || url === 'https://your-project-id.supabase.co') {
+  if (!isSupabaseConfigured()) {
     return null;
   }
 
@@ -47,9 +59,10 @@ export function getSupabaseClient(): SupabaseClient | null {
           persistSession: true,
           autoRefreshToken: true,
           detectSessionInUrl: true,
+          storage: window.localStorage,
         },
       });
-      logger.info('SupabaseClient', 'Initialized Supabase client with custom URL', { url });
+      logger.info('SupabaseClient', 'Initialized Supabase client with URL', { url });
     } catch (err) {
       logger.error('SupabaseClient', 'Failed to initialize Supabase client', err);
       return null;
@@ -59,7 +72,10 @@ export function getSupabaseClient(): SupabaseClient | null {
   return cachedClient;
 }
 
-export async function testSupabaseConnection(url: string, anonKey: string): Promise<{ success: boolean; message: string; latencyMs?: number }> {
+export async function testSupabaseConnection(
+  url: string,
+  anonKey: string
+): Promise<{ success: boolean; message: string; latencyMs?: number }> {
   if (!url || !anonKey) {
     return { success: false, message: 'URL and Anon Key are required.' };
   }
@@ -70,11 +86,11 @@ export async function testSupabaseConnection(url: string, anonKey: string): Prom
     const { error } = await testClient.from('profiles').select('count', { count: 'exact', head: true });
     const latencyMs = Math.round(performance.now() - startTime);
 
-    if (error && error.code !== 'PGRST116') {
-      logger.warn('SupabaseTest', 'Connection responded with error code', error);
+    if (error && error.code !== 'PGRST116' && error.code !== '42P01') {
+      logger.warn('SupabaseTest', 'Connection responded with notice', error);
       return {
         success: false,
-        message: `Connected to Supabase endpoint, but query returned: ${error.message} (Code: ${error.code})`,
+        message: `Endpoint reached, but query returned: ${error.message} (Code: ${error.code})`,
         latencyMs,
       };
     }

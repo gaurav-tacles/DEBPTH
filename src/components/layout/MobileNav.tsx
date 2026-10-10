@@ -11,6 +11,7 @@ import {
   Bell,
   ShieldCheck,
   Settings,
+  LogOut,
 } from 'lucide-react';
 import { NavView } from './AppSidebar';
 import { useWorkspace } from '../../context/WorkspaceContext';
@@ -29,7 +30,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { isSuperAdmin, projects, notifications, suggestions } = useWorkspace();
+  const { isSuperAdmin, projects, notifications, suggestions, signOut } = useWorkspace();
 
   const unreadNotifs = notifications.filter((n) => !n.isRead).length;
 
@@ -112,9 +113,21 @@ export const MobileNav: React.FC<MobileNavProps> = ({
               </div>
             </div>
 
-            <div className="border-t border-[#38302D] pt-3 text-[11px] text-[#B4B0B0]">
-              <div>Role: {isSuperAdmin ? 'Super Admin' : 'Member'}</div>
-              <div className="text-[10px] text-[#B4B0B0]/60 mt-0.5 font-mono">Project Apex SaaS · 2026</div>
+            <div className="border-t border-[#38302D] pt-3 text-[11px] text-[#B4B0B0] flex items-center justify-between">
+              <div>
+                <div>Role: {isSuperAdmin ? 'Super Admin' : 'Member'}</div>
+                <div className="text-[10px] text-[#B4B0B0]/60 mt-0.5 font-mono">Project Apex SaaS · 2026</div>
+              </div>
+              <button
+                onClick={() => {
+                  onClose();
+                  signOut();
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[#FB7185]/30 text-[#FB7185] hover:bg-[#FB7185]/10 text-xs font-medium cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
+              </button>
             </div>
           </div>
         </div>
