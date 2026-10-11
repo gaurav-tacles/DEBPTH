@@ -13,7 +13,7 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
   onClose,
   initialToken = '',
 }) => {
-  const { redeemInvitation, invitations } = useWorkspace();
+  const { redeemInvitation } = useWorkspace();
   const [token, setToken] = useState(initialToken);
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -34,10 +34,6 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-
-  const pendingInvitations = invitations.filter(
-    (inv) => !inv.acceptedAt && new Date(inv.expiresAt) > new Date()
-  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
@@ -84,27 +80,6 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
                 className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/60 focus:border-[#8B5CF6] focus:outline-none font-mono"
               />
             </div>
-
-            {import.meta.env.DEV && pendingInvitations.length > 0 && (
-              <div className="rounded-xl border border-[#38302D] bg-[#0F0B0A] p-2.5 space-y-1">
-                <span className="text-[10px] text-[#B4B0B0] font-mono uppercase tracking-wider block">
-                  Dev Preview — Pending Tokens:
-                </span>
-                {pendingInvitations.map((inv) => (
-                  <button
-                    key={inv.id}
-                    type="button"
-                    onClick={() => {
-                      setToken(inv.token);
-                      setFullName(inv.email.split('@')[0].replace('.', ' ').toUpperCase());
-                    }}
-                    className="w-full text-left font-mono text-[11px] text-[#8B5CF6] hover:underline truncate"
-                  >
-                    {inv.email} ({inv.token})
-                  </button>
-                ))}
-              </div>
-            )}
 
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-[#B4B0B0]">Your Full Name *</label>

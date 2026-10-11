@@ -191,3 +191,22 @@ export interface ActivityEvent {
   details: string;
   createdAt: string;
 }
+
+export type IdeaCategory = 'product' | 'startup' | 'feature' | 'architecture' | 'note' | 'random';
+export type IdeaPriority = 'low' | 'medium' | 'high' | 'urgent';
+export type IdeaStatus = 'inbox' | 'exploring' | 'validated' | 'archived';
+
+export interface Idea {
+  id: string;
+  userId: string;
+  title: string;
+  description: string;
+  category: IdeaCategory;
+  priority: IdeaPriority;
+  status: IdeaStatus;
+  tags: string[];
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+

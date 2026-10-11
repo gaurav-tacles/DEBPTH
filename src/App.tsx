@@ -13,11 +13,14 @@ import { MilestonesView } from './components/milestones/MilestonesView';
 import { DocumentsView } from './components/documents/DocumentsView';
 import { SuggestionsView } from './components/suggestions/SuggestionsView';
 import { TeamDirectory } from './components/team/TeamDirectory';
+import { IdeasView } from './components/ideas/IdeasView';
+import { IdeaCaptureModal } from './components/ideas/IdeaCaptureModal';
 import { AnnouncementsView } from './components/announcements/AnnouncementsView';
 import { SecurityView } from './components/security/SecurityView';
 import { SettingsView } from './components/settings/SettingsView';
 import { AuthScreen } from './components/auth/AuthScreen';
 import { LoadingScreen } from './components/auth/LoadingScreen';
+import { Brain } from 'lucide-react';
 
 const WorkspaceShell: React.FC = () => {
   // Default selected navigation item after authenticated is 'overview' or 'team'
@@ -25,8 +28,9 @@ const WorkspaceShell: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isIdeaModalOpen, setIsIdeaModalOpen] = useState(false);
 
-  const { activeProjectId, setActiveProjectId } = useWorkspace();
+  const { activeProjectId, setActiveProjectId, createIdea } = useWorkspace();
 
   const handleSelectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
@@ -80,6 +84,8 @@ const WorkspaceShell: React.FC = () => {
 
           {currentView === 'team' && <TeamDirectory />}
 
+          {currentView === 'ideas' && <IdeasView />}
+
           {currentView === 'suggestions' && <SuggestionsView />}
 
           {currentView === 'tasks' && <TasksView />}
@@ -93,6 +99,26 @@ const WorkspaceShell: React.FC = () => {
           {currentView === 'settings' && <SettingsView />}
         </main>
       </div>
+
+      {/* Floating Action Button for Ideas Quick-Capture (Prominent on mobile, accessible on desktop) */}
+      <aside aria-label="Quick capture" className="fixed bottom-20 right-4 sm:bottom-6 sm:right-6 z-40">
+        <button
+          onClick={() => setIsIdeaModalOpen(true)}
+          className="group flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#6D28D9] p-3.5 sm:px-4 sm:py-3 text-white shadow-xl shadow-[#8B5CF6]/25 transition-all hover:shadow-[#8B5CF6]/40 hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#8B5CF6] focus:ring-offset-2 focus:ring-offset-[#0F0B0A]"
+          aria-label="Capture an idea"
+          title="Capture an idea"
+        >
+          <Brain className="h-5 w-5 transition-transform group-hover:rotate-12" />
+          <span className="hidden sm:inline text-xs font-semibold tracking-wide">Capture Idea</span>
+        </button>
+      </aside>
+
+      {/* Quick Idea Capture Modal */}
+      <IdeaCaptureModal
+        isOpen={isIdeaModalOpen}
+        onClose={() => setIsIdeaModalOpen(false)}
+        onSave={(data) => createIdea(data)}
+      />
 
       {/* Mobile Navigation Drawer */}
       <MobileNav

@@ -13,6 +13,7 @@ import {
   ActivityEvent,
   ProjectRole,
   UserRole,
+  Idea,
 } from '../types';
 import { logger } from '../lib/logger';
 import { getSupabaseClient } from '../lib/supabase';
@@ -32,6 +33,7 @@ interface WorkspaceDatabase {
   announcements: Announcement[];
   notifications: AppNotification[];
   activityLogs: ActivityEvent[];
+  ideas: Idea[];
 }
 
 function getInitialDatabase(): WorkspaceDatabase {
@@ -49,6 +51,7 @@ function getInitialDatabase(): WorkspaceDatabase {
     announcements: [],
     notifications: [],
     activityLogs: [],
+    ideas: [],
   };
 }
 
@@ -65,6 +68,7 @@ class WorkspaceRepository {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (parsed && Array.isArray(parsed.profiles) && Array.isArray(parsed.projects)) {
+          if (!Array.isArray(parsed.ideas)) parsed.ideas = [];
           return parsed;
         }
       }
@@ -93,7 +97,8 @@ class WorkspaceRepository {
     avatarUrl?: string
   ): Promise<UserProfile> {
     const supabase = getSupabaseClient();
-    const isSuperAdminEmail = email.toLowerCase() === 'gauravp18189@gmail.com';
+    const normalizedEmail = email.trim().toLowerCase();
+    const isSuperAdminEmail = normalizedEmail === 'realgauravpatel@gmail.com';
 
     // 1. Check if Supabase has this profile
     if (supabase) {
@@ -261,6 +266,31 @@ class WorkspaceRepository {
           updatedAt: t.updated_at,
         }));
         this.saveDatabase({ ...this.db, tasks: mappedTasks });
+      }
+
+      // 4. Sync ideas (for current authenticated user)
+      if (currentUserId) {
+        const { data: remoteIdeas } = await supabase
+          .from('ideas')
+          .select('*')
+          .eq('user_id', currentUserId);
+
+        if (remoteIdeas) {
+          const mappedIdeas: Idea[] = remoteIdeas.map((i) => ({
+            id: i.id,
+            userId: i.user_id,
+            title: i.title,
+            description: i.description || '',
+            category: i.category || 'note',
+            priority: i.priority || 'medium',
+            status: i.status || 'inbox',
+            tags: i.tags || [],
+            isArchived: Boolean(i.is_archived),
+            createdAt: i.created_at,
+            updatedAt: i.updated_at,
+          }));
+          this.saveDatabase({ ...this.db, ideas: mappedIdeas });
+        }
       }
     } catch (err) {
       logger.error('WorkspaceRepository', 'Error syncing with Supabase', err);
@@ -1142,6 +1172,99 @@ class WorkspaceRepository {
       ...l,
       user: this.getProfileById(l.userId),
     }));
+  }
+
+  // Personal Ideas Feature
+  getIdeas(userId: string): Idea[] {
+    return this.db.ideas
+      .filter((i) => i.userId === userId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  createIdea(
+    data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>,
+    userId: string
+  ): Idea {
+    const newId = `idea-${Date.now()}`;
+    const now = new Date().toISOString();
+    const newIdea: Idea = {
+      ...data,
+      id: newId,
+      userId,
+      isArchived: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.saveDatabase({
+      ...this.db,
+      ideas: [newIdea, ...this.db.ideas],
+    });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('ideas').insert({
+          id: newIdea.id,
+          user_id: newIdea.userId,
+          title: newIdea.title,
+          description: newIdea.description,
+          category: newIdea.category,
+          priority: newIdea.priority,
+          status: newIdea.status,
+          tags: newIdea.tags,
+          is_archived: newIdea.isArchived,
+        })
+      ).catch((err: unknown) => logger.warn('WorkspaceRepository', 'Could not sync idea to Supabase', err));
+    }
+
+    return newIdea;
+  }
+
+  updateIdea(id: string, updates: Partial<Idea>, userId: string): Idea {
+    const now = new Date().toISOString();
+    const updatedIdeas = this.db.ideas.map((i) =>
+      i.id === id && i.userId === userId ? { ...i, ...updates, updatedAt: now } : i
+    );
+    this.saveDatabase({ ...this.db, ideas: updatedIdeas });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const dbUpdates: Record<string, unknown> = { updated_at: now };
+      if (updates.title !== undefined) dbUpdates.title = updates.title;
+      if (updates.description !== undefined) dbUpdates.description = updates.description;
+      if (updates.category !== undefined) dbUpdates.category = updates.category;
+      if (updates.priority !== undefined) dbUpdates.priority = updates.priority;
+      if (updates.status !== undefined) dbUpdates.status = updates.status;
+      if (updates.tags !== undefined) dbUpdates.tags = updates.tags;
+      if (updates.isArchived !== undefined) dbUpdates.is_archived = updates.isArchived;
+
+      Promise.resolve(
+        supabase
+          .from('ideas')
+          .update(dbUpdates)
+          .eq('id', id)
+          .eq('user_id', userId)
+      ).catch((err: unknown) => logger.warn('WorkspaceRepository', 'Could not update idea in Supabase', err));
+    }
+
+    return this.db.ideas.find((i) => i.id === id)!;
+  }
+
+  deleteIdea(id: string, userId: string): void {
+    const remaining = this.db.ideas.filter((i) => !(i.id === id && i.userId === userId));
+    this.saveDatabase({ ...this.db, ideas: remaining });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase
+          .from('ideas')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', userId)
+      ).catch((err: unknown) => logger.warn('WorkspaceRepository', 'Could not delete idea in Supabase', err));
+    }
   }
 
   // Clear all workspace data

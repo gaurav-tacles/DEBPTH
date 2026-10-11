@@ -15,6 +15,7 @@ import {
   Invitation,
   ProjectRole,
   UserRole,
+  Idea,
 } from '../types';
 import { workspaceRepo } from '../services/workspaceRepository';
 import { logger } from '../lib/logger';
@@ -35,6 +36,7 @@ interface WorkspaceContextValue {
   notifications: AppNotification[];
   invitations: Invitation[];
   activityLogs: ActivityEvent[];
+  ideas: Idea[];
   isSuperAdmin: boolean;
   canAccessActiveProject: boolean;
 
@@ -74,6 +76,9 @@ interface WorkspaceContextValue {
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   updateProfileLabels: (userId: string, label: string, action: 'add' | 'remove') => void;
+  createIdea: (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>) => Idea;
+  updateIdea: (id: string, updates: Partial<Idea>) => Idea;
+  deleteIdea: (id: string) => void;
   resetWorkspaceData: () => void;
   refreshWorkspace: () => void;
 }
@@ -469,6 +474,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return workspaceRepo.getActivityLogs(activeProjectId || undefined);
   }, [activeProjectId, isAuthenticated, tick]);
 
+  const ideas = useMemo(() => {
+    if (!isAuthenticated || !currentUserId) return [];
+    return workspaceRepo.getIdeas(currentUserId);
+  }, [currentUserId, isAuthenticated, tick]);
+
   // Switch active persona
   const switchUser = useCallback((userId: string) => {
     const target = workspaceRepo.getProfileById(userId);
@@ -678,6 +688,33 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [currentUserId, refreshWorkspace]
   );
 
+  // Personal Ideas Actions
+  const createIdea = useCallback(
+    (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>) => {
+      const idea = workspaceRepo.createIdea(data, currentUserId);
+      refreshWorkspace();
+      return idea;
+    },
+    [currentUserId, refreshWorkspace]
+  );
+
+  const updateIdea = useCallback(
+    (id: string, updates: Partial<Idea>) => {
+      const updated = workspaceRepo.updateIdea(id, updates, currentUserId);
+      refreshWorkspace();
+      return updated;
+    },
+    [currentUserId, refreshWorkspace]
+  );
+
+  const deleteIdea = useCallback(
+    (id: string) => {
+      workspaceRepo.deleteIdea(id, currentUserId);
+      refreshWorkspace();
+    },
+    [currentUserId, refreshWorkspace]
+  );
+
   // Reset Data
   const resetWorkspaceData = useCallback(() => {
     workspaceRepo.resetToSampleData();
@@ -701,6 +738,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         notifications,
         invitations,
         activityLogs,
+        ideas,
         isSuperAdmin,
         canAccessActiveProject,
 
@@ -737,6 +775,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         markNotificationRead,
         markAllNotificationsRead,
         updateProfileLabels,
+        createIdea,
+        updateIdea,
+        deleteIdea,
         resetWorkspaceData,
         refreshWorkspace,
       }}

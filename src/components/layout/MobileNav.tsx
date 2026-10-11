@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Settings,
   LogOut,
+  Brain,
 } from 'lucide-react';
 import { NavView } from './AppSidebar';
 import { useWorkspace } from '../../context/WorkspaceContext';
@@ -30,15 +31,16 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { isSuperAdmin, projects, notifications, suggestions, signOut } = useWorkspace();
+  const { isSuperAdmin, projects, notifications, suggestions, ideas, signOut } = useWorkspace();
 
   const unreadNotifs = notifications.filter((n) => !n.isRead).length;
+  const activeIdeasCount = ideas.filter((i) => !i.isArchived).length;
 
   const bottomItems = [
     { id: 'team' as NavView, label: 'Team', icon: Users },
     { id: 'overview' as NavView, label: 'Overview', icon: LayoutDashboard },
     { id: 'projects' as NavView, label: 'Projects', icon: FolderKanban },
-    { id: 'suggestions' as NavView, label: 'Suggestions', icon: Lightbulb },
+    { id: 'ideas' as NavView, label: 'Ideas', icon: Brain, badge: activeIdeasCount > 0 ? activeIdeasCount : undefined },
     { id: 'announcements' as NavView, label: 'Alerts', icon: Bell, badge: unreadNotifs },
   ];
 
@@ -46,6 +48,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
     { id: 'team' as NavView, label: 'Team Directory', icon: Users },
     { id: 'overview' as NavView, label: 'Overview', icon: LayoutDashboard },
     { id: 'projects' as NavView, label: 'Projects', icon: FolderKanban, badge: projects.length },
+    { id: 'ideas' as NavView, label: 'Personal Ideas & Notes', icon: Brain, badge: activeIdeasCount > 0 ? activeIdeasCount : undefined },
     { id: 'suggestions' as NavView, label: 'Suggestions Center', icon: Lightbulb },
     { id: 'tasks' as NavView, label: 'Tasks & Kanban', icon: CheckSquare },
     { id: 'documents' as NavView, label: 'Document Library', icon: FileText },

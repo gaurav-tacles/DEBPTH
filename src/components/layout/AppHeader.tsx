@@ -180,44 +180,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                 </div>
               </div>
 
-              {/* Persona Switcher for Quick Verification (Isolated to Dev/Demo Mode) */}
-              {import.meta.env.DEV && (
-                <div className="mt-2">
-                  <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-[#B4B0B0]">
-                    Dev Personas (Local RBAC Preview)
-                  </div>
-                  <div className="space-y-1 mt-1">
-                    {profiles.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => {
-                          switchUser(p.id);
-                          setShowUserMenu(false);
-                        }}
-                        className={`w-full flex items-center justify-between rounded-lg px-2 py-1.5 text-left transition ${
-                          p.id === currentUser?.id
-                            ? 'bg-[#8B5CF6]/15 text-[#F4F8FF] font-medium border border-[#8B5CF6]/30'
-                            : 'text-[#B4B0B0] hover:bg-[#211B19] hover:text-[#F4F8FF]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <img
-                            src={p.avatarUrl}
-                            alt=""
-                            className="w-5 h-5 rounded object-cover ring-1 ring-[#38302D]"
-                          />
-                          <span className="truncate text-xs">{p.fullName}</span>
-                          <span className="text-[10px] font-mono text-[#B4B0B0]">
-                            ({p.role === 'super_admin' ? 'Super Admin' : 'Member'})
-                          </span>
-                        </div>
-                        {p.id === currentUser?.id && <Check className="w-3.5 h-3.5 text-[#8B5CF6] shrink-0" />}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Sign Out Button */}
               <div className="mt-2 pt-2 border-t border-[#38302D]">
                 <button

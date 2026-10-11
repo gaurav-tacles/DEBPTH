@@ -13,6 +13,7 @@ import {
   Terminal,
   LogOut,
   Sparkles,
+  Brain,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 
@@ -21,6 +22,7 @@ export type NavView =
   | 'projects'
   | 'project-detail'
   | 'team'
+  | 'ideas'
   | 'suggestions'
   | 'tasks'
   | 'documents'
@@ -34,16 +36,19 @@ interface AppSidebarProps {
 }
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate }) => {
-  const { isSuperAdmin, currentUser, projects, notifications, suggestions, signOut } = useWorkspace();
+  const { isSuperAdmin, currentUser, projects, notifications, suggestions, ideas, signOut } = useWorkspace();
 
   const unreadNotifs = notifications.filter((n) => !n.isRead).length;
   const pendingSuggestions = suggestions.filter(
     (s) => s.status === 'submitted' || s.status === 'under_review'
   ).length;
 
+  const activeIdeasCount = ideas.filter((i) => !i.isArchived).length;
+
   const navItems = [
     { id: 'overview' as NavView, label: 'Overview', icon: LayoutDashboard },
     { id: 'projects' as NavView, label: 'Projects', icon: FolderKanban, badge: projects.length },
+    { id: 'ideas' as NavView, label: 'Ideas & Notes', icon: Brain, badge: activeIdeasCount > 0 ? activeIdeasCount : undefined },
     { id: 'team' as NavView, label: 'Team', icon: Users, featured: true },
     {
       id: 'suggestions' as NavView,
