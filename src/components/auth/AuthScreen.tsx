@@ -106,15 +106,16 @@ export const AuthScreen: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      // First try redeeming through workspace repository
+      // Redeem invitation and verify matching email and token validity
       try {
-        redeemInvitation(inviteToken.trim(), fullName.trim());
-        setSuccessMessage('Invitation accepted! Signing you in...');
-      } catch (repoErr) {
-        // If not in local, pass to auth
-        loggerWarn(repoErr);
+        redeemInvitation(inviteToken.trim(), fullName.trim(), email.trim());
+      } catch (repoErr: unknown) {
+        setError(repoErr instanceof Error ? repoErr.message : 'Invalid or expired invitation token.');
+        setLoading(false);
+        return;
       }
 
+      setSuccessMessage('Invitation verified! Signing you in...');
       const res = await signUpWithEmail(email.trim(), password || 'ApexDev#2026', fullName.trim(), inviteToken.trim());
       if (res.error) {
         setError(res.error.message || 'Failed to complete registration.');
@@ -204,7 +205,7 @@ export const AuthScreen: React.FC = () => {
           </div>
 
           {/* Mode Switcher Tabs */}
-          <div className="grid grid-cols-3 gap-1 rounded-xl bg-[#0F0B0A] p-1 border border-[#38302D] mb-6 text-xs font-medium">
+          <div className={`grid ${import.meta.env.DEV ? 'grid-cols-3' : 'grid-cols-2'} gap-1 rounded-xl bg-[#0F0B0A] p-1 border border-[#38302D] mb-6 text-xs font-medium`}>
             <button
               onClick={() => {
                 setMode('signin');
@@ -231,19 +232,21 @@ export const AuthScreen: React.FC = () => {
             >
               Invitation
             </button>
-            <button
-              onClick={() => {
-                setMode('personas');
-                setError(null);
-              }}
-              className={`rounded-lg py-1.5 transition ${
-                mode === 'personas'
-                  ? 'bg-[#211B19] text-[#F4F8FF] font-semibold shadow-xs border border-[#38302D]'
-                  : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
-              }`}
-            >
-              Personas
-            </button>
+            {import.meta.env.DEV && (
+              <button
+                onClick={() => {
+                  setMode('personas');
+                  setError(null);
+                }}
+                className={`rounded-lg py-1.5 transition ${
+                  mode === 'personas'
+                    ? 'bg-[#211B19] text-[#F4F8FF] font-semibold shadow-xs border border-[#38302D]'
+                    : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
+                }`}
+              >
+                Dev Personas
+              </button>
+            )}
           </div>
 
           {/* Alerts */}
@@ -356,21 +359,23 @@ export const AuthScreen: React.FC = () => {
                 </button>
               </form>
 
-              {/* Fast test credentials notice */}
-              <div className="rounded-xl border border-[#38302D]/60 bg-[#211B19]/50 p-3 text-[11px] text-[#B4B0B0] space-y-1">
-                <div className="flex items-center justify-between text-[#F4F8FF] font-medium">
-                  <span>Quick Evaluation Mode</span>
-                  <button
-                    onClick={() => setMode('personas')}
-                    className="text-[#8B5CF6] hover:underline"
-                  >
-                    Select Persona →
-                  </button>
+              {/* Fast test credentials notice (Dev only) */}
+              {import.meta.env.DEV && (
+                <div className="rounded-xl border border-[#38302D]/60 bg-[#211B19]/50 p-3 text-[11px] text-[#B4B0B0] space-y-1">
+                  <div className="flex items-center justify-between text-[#F4F8FF] font-medium">
+                    <span>Dev RBAC Preview Mode</span>
+                    <button
+                      onClick={() => setMode('personas')}
+                      className="text-[#8B5CF6] hover:underline"
+                    >
+                      Select Dev Persona →
+                    </button>
+                  </div>
+                  <p>
+                    Dev mode active: You can test the role-based UI as Super Admin (Gaurav P.) or Member.
+                  </p>
                 </div>
-                <p>
-                  You can also click <strong>Personas</strong> above to immediately enter as Super Admin (Gaurav P.) or Member.
-                </p>
-              </div>
+              )}
             </div>
           )}
 

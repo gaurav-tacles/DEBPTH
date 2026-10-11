@@ -85,10 +85,10 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
               />
             </div>
 
-            {pendingInvitations.length > 0 && (
+            {import.meta.env.DEV && pendingInvitations.length > 0 && (
               <div className="rounded-xl border border-[#38302D] bg-[#0F0B0A] p-2.5 space-y-1">
                 <span className="text-[10px] text-[#B4B0B0] font-mono uppercase tracking-wider block">
-                  Quick-Select Pending Token:
+                  Dev Preview — Pending Tokens:
                 </span>
                 {pendingInvitations.map((inv) => (
                   <button

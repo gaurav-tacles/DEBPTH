@@ -614,11 +614,14 @@ class WorkspaceRepository {
     return newInv;
   }
 
-  redeemInvitation(token: string, fullName: string): UserProfile {
+  redeemInvitation(token: string, fullName: string, expectedEmail?: string): UserProfile {
     const inv = this.db.invitations.find((i) => i.token === token);
     if (!inv) throw new Error('Invalid or unknown invitation token.');
     if (inv.acceptedAt) throw new Error('This invitation has already been redeemed.');
     if (new Date(inv.expiresAt) < new Date()) throw new Error('This invitation has expired.');
+    if (expectedEmail && inv.email.toLowerCase() !== expectedEmail.trim().toLowerCase()) {
+      throw new Error(`This invitation was issued to ${inv.email}. Please use the matching email address.`);
+    }
 
     const newUserId = `user-${Date.now()}`;
     const newProfile: UserProfile = {

@@ -130,7 +130,6 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
                   className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-2.5 py-2 text-xs text-[#F4F8FF] focus:border-[#8B5CF6] focus:outline-none"
                 >
                   <option value="member">Standard Member</option>
-                  <option value="super_admin">Super Admin</option>
                 </select>
               </div>
 

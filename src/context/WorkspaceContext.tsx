@@ -59,7 +59,7 @@ interface WorkspaceContextValue {
   updateProjectMember: (memberId: string, role: ProjectRole, permissions: ProjectMember['permissions']) => void;
   removeProjectMember: (memberId: string) => void;
   createInvitation: (email: string, role: UserRole, initialLabels: string[], assignedProjectIds: string[], expiresInDays: number) => Invitation;
-  redeemInvitation: (token: string, fullName: string) => UserProfile;
+  redeemInvitation: (token: string, fullName: string, expectedEmail?: string) => UserProfile;
   createTask: (data: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>) => Task;
   updateTask: (id: string, updates: Partial<Task>) => Task;
   deleteTask: (id: string) => void;
@@ -131,22 +131,35 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }
         }
 
-        // If no live Supabase session, check local authenticated flag
-        const isLocallyAuthed = localStorage.getItem(AUTH_TOKEN_KEY) === 'true';
-        const savedUserId = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
-
-        if (isLocallyAuthed && savedUserId) {
-          const profile = workspaceRepo.getProfileById(savedUserId);
-          if (profile && isMounted) {
-            setCurrentUserId(profile.id);
-            setIsAuthenticated(true);
+        // If Supabase is configured, session must come from Supabase Auth
+        if (supabase) {
+          if (isMounted) {
+            setCurrentUserId('');
+            setIsAuthenticated(false);
             setIsCheckingAuth(false);
-            logger.info('Auth', 'Restored verified session for user', { user: profile.email });
-            return;
+            logger.info('Auth', 'No verified Supabase Auth session found - prompt login');
+          }
+          return;
+        }
+
+        // Only allow development-mode local persona session if Supabase is intentionally unconfigured
+        if (import.meta.env.DEV) {
+          const isLocallyAuthed = localStorage.getItem(AUTH_TOKEN_KEY) === 'true';
+          const savedUserId = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
+
+          if (isLocallyAuthed && savedUserId) {
+            const profile = workspaceRepo.getProfileById(savedUserId);
+            if (profile && isMounted) {
+              setCurrentUserId(profile.id);
+              setIsAuthenticated(true);
+              setIsCheckingAuth(false);
+              logger.info('Auth', 'Restored verified dev session for user', { user: profile.email });
+              return;
+            }
           }
         }
 
-        // If no valid session, strictly unauthenticated
+        // Otherwise strictly unauthenticated
         if (isMounted) {
           setCurrentUserId('');
           setIsAuthenticated(false);
@@ -222,14 +235,19 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    // Offline / Demo Fallback: Sign in as primary workspace account (Gaurav P.)
-    const admin = workspaceRepo.getProfiles().find((p) => p.role === 'super_admin') || workspaceRepo.getProfiles()[0];
-    if (admin) {
-      setCurrentUserId(admin.id);
+    // In production, Supabase Auth is required
+    if (!import.meta.env.DEV) {
+      return { error: new Error('Supabase authentication is required. Please configure your Supabase URL and Anon Key in Database & Auth Config.') };
+    }
+
+    // Isolated Dev Demo Fallback (non-admin standard member)
+    const devMember = workspaceRepo.getProfiles().find((p) => p.role === 'member') || workspaceRepo.getProfiles()[0];
+    if (devMember) {
+      setCurrentUserId(devMember.id);
       setIsAuthenticated(true);
       localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, admin.id);
-      logger.info('Auth', 'Signed in via Google OAuth demo fallback', { user: admin.email });
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, devMember.id);
+      logger.info('Auth', 'Signed in via Google OAuth dev fallback', { user: devMember.email });
       return { error: null };
     }
     return { error: new Error('Workspace profile initialization error.') };
@@ -262,28 +280,23 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    // Offline / Local sign-in fallback: Check against existing profiles
+    // In production, Supabase is mandatory
+    if (!import.meta.env.DEV) {
+      return { error: new Error('Supabase authentication is required. Please check your credentials or configure Supabase connection.') };
+    }
+
+    // Development fallback: check existing profiles
     const target = workspaceRepo.getProfiles().find((p) => p.email.toLowerCase() === email.toLowerCase());
     if (target) {
       setCurrentUserId(target.id);
       setIsAuthenticated(true);
       localStorage.setItem(AUTH_TOKEN_KEY, 'true');
       localStorage.setItem(CURRENT_USER_STORAGE_KEY, target.id);
-      logger.info('Auth', 'Signed in via local password verification', { user: target.email });
+      logger.info('Auth', 'Signed in via dev local profile', { user: target.email });
       return { error: null };
     }
 
-    // If new user and credentials provided, create user
-    const newProfile = await workspaceRepo.ensureAuthenticatedProfile(
-      `usr_${Date.now()}`,
-      email.toLowerCase()
-    );
-    setCurrentUserId(newProfile.id);
-    setIsAuthenticated(true);
-    localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-    localStorage.setItem(CURRENT_USER_STORAGE_KEY, newProfile.id);
-    setProfiles(workspaceRepo.getProfiles());
-    return { error: null };
+    return { error: new Error('User not found. In development mode, please choose a Dev Persona or redeem an invitation.') };
   }, []);
 
   const signUpWithEmail = useCallback(
@@ -320,7 +333,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       }
 
-      // Offline / Local registration
+      // In production, require Supabase
+      if (!import.meta.env.DEV) {
+        return { error: new Error('Supabase Auth is required to register new users in production.') };
+      }
+
+      // Offline / Local registration in dev mode
       const newProfile = await workspaceRepo.ensureAuthenticatedProfile(
         `usr_${Date.now()}`,
         email.toLowerCase(),
@@ -524,8 +542,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const redeemInvitation = useCallback(
-    (token: string, fullName: string) => {
-      const profile = workspaceRepo.redeemInvitation(token, fullName);
+    (token: string, fullName: string, expectedEmail?: string) => {
+      const profile = workspaceRepo.redeemInvitation(token, fullName, expectedEmail);
       refreshWorkspace();
       return profile;
     },

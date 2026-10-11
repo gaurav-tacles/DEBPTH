@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { ProjectDocument } from '../../types';
+import { getSupabaseClient } from '../../lib/supabase';
 
 export const DocumentsView: React.FC = () => {
   const {
@@ -73,6 +74,44 @@ export const DocumentsView: React.FC = () => {
     setRequestReason('');
   };
 
+  const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
+
+  const handleDownloadDocument = async (doc: ProjectDocument) => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.storage
+          .from('project-documents')
+          .createSignedUrl(doc.storagePath, 60);
+
+        if (error) {
+          setDownloadNotice(`Storage Policy Access Denied: ${error.message}`);
+          setTimeout(() => setDownloadNotice(null), 5000);
+          return;
+        }
+
+        if (data?.signedUrl) {
+          const a = document.createElement('a');
+          a.href = data.signedUrl;
+          a.download = doc.fileName;
+          a.target = '_blank';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          return;
+        }
+      } catch (err: unknown) {
+        setDownloadNotice(err instanceof Error ? err.message : 'Storage download error');
+        setTimeout(() => setDownloadNotice(null), 5000);
+        return;
+      }
+    }
+
+    // Local / Dev verified download simulation
+    setDownloadNotice(`Verified authorization for ${doc.fileName} (${(doc.fileSize / 1024 / 1024).toFixed(2)} MB). Download simulated.`);
+    setTimeout(() => setDownloadNotice(null), 4000);
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Header */}
@@ -94,6 +133,13 @@ export const DocumentsView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {downloadNotice && (
+        <div className="flex items-center gap-2 rounded-xl border border-indigo-500/40 bg-indigo-950/40 p-3 text-xs text-indigo-300">
+          <Shield className="w-4 h-4 text-indigo-400 shrink-0" />
+          <span>{downloadNotice}</span>
+        </div>
+      )}
 
       {/* Project Selector Bar */}
       <div className="flex items-center gap-3 border-b border-slate-800 pb-3 text-xs">
@@ -187,8 +233,8 @@ export const DocumentsView: React.FC = () => {
                     )
                   ) : (
                     <button
-                      onClick={() => alert(`Simulating secure verified download of: ${doc.fileName}`)}
-                      className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+                      onClick={() => handleDownloadDocument(doc)}
+                      className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Download Securely</span>
