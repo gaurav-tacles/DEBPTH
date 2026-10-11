@@ -16,7 +16,6 @@ interface AuthContextValue {
 
   signInWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signUpWithEmail: (email: string, password: string, fullName: string, inviteToken?: string) => Promise<{ success: boolean; error?: string }>;
-  signInWithGoogle: () => Promise<{ success: boolean; error?: string }>;
   resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
   clearError: () => void;
@@ -318,38 +317,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     []
   );
 
-  // Sign In with Google
-  const signInWithGoogle = useCallback(async () => {
-    setError(null);
-    const supabase = getSupabaseClient();
-
-    if (!supabase) {
-      const err = 'Google sign-in requires configuring VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in settings.';
-      setError(err);
-      return { success: false, error: err };
-    }
-
-    try {
-      const { error: oAuthError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-        },
-      });
-
-      if (oAuthError) {
-        setError(oAuthError.message);
-        return { success: false, error: oAuthError.message };
-      }
-
-      return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      return { success: false, error: msg };
-    }
-  }, []);
-
   // Forgot Password / Reset
   const resetPassword = useCallback(async (email: string) => {
     setError(null);
@@ -416,7 +383,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         error,
         signInWithEmail,
         signUpWithEmail,
-        signInWithGoogle,
         resetPassword,
         signOut,
         clearError,

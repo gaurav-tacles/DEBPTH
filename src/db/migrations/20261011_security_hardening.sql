@@ -1,8 +1,11 @@
 -- ==============================================================================
 -- ProjectHub Migration: 20261011_security_hardening.sql
--- Description: Enforces Row-Level Security, eliminates recursion, prevents
--- role escalation, and validates single-use invitations.
--- Safe, repeatable, non-destructive migration.
+-- Description:
+-- 1. Automates Super Admin provisioning via auth.users trigger (realgauravpatel@gmail.com)
+-- 2. Enforces Row-Level Security, eliminates recursion, prevents role escalation
+-- 3. Creates and secures the personal ideas repository (public.ideas)
+-- 4. Validates single-use invitations and hardens document storage
+-- Safe, repeatable, non-destructive migration for Supabase PostgreSQL
 -- ==============================================================================
 
 -- 1. Helper function: check if caller has super_admin role
@@ -34,7 +37,85 @@ AS $$
   );
 $$;
 
--- 3. Profiles Policies Hardening
+-- 3. Trusted Server-Side User Provisioning Trigger on auth.users
+-- Whenever an account is created in Supabase Auth (email/password or invite),
+-- this trigger automatically provisions public.profiles.
+-- Strict rule: ONLY realgauravpatel@gmail.com receives 'super_admin' role.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.profiles (
+    id,
+    email,
+    full_name,
+    role,
+    labels,
+    mfa_enabled,
+    created_at,
+    last_active_at
+  )
+  VALUES (
+    NEW.id,
+    LOWER(NEW.email),
+    COALESCE(NEW.raw_user_meta_data->>'full_name', SPLIT_PART(NEW.email, '@', 1)),
+    CASE
+      WHEN LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+      ELSE 'member'::public.user_workspace_role
+    END,
+    CASE
+      WHEN LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN ARRAY['Architecture', 'Security', 'Owner']
+      ELSE ARRAY['Developer']
+    END,
+    TRUE,
+    NOW(),
+    NOW()
+  )
+  ON CONFLICT (id) DO UPDATE
+  SET email = EXCLUDED.email,
+      role = CASE
+        WHEN LOWER(EXCLUDED.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+        ELSE profiles.role
+      END,
+      last_active_at = NOW();
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- 4. Idempotent Backfill: Sync existing auth.users into profiles
+INSERT INTO public.profiles (id, email, full_name, role, labels, mfa_enabled, created_at, last_active_at)
+SELECT
+  u.id,
+  LOWER(u.email),
+  COALESCE(u.raw_user_meta_data->>'full_name', SPLIT_PART(u.email, '@', 1)),
+  CASE
+    WHEN LOWER(u.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+    ELSE 'member'::public.user_workspace_role
+  END,
+  CASE
+    WHEN LOWER(u.email) = 'realgauravpatel@gmail.com' THEN ARRAY['Architecture', 'Security', 'Owner']
+    ELSE ARRAY['Developer']
+  END,
+  TRUE,
+  NOW(),
+  NOW()
+FROM auth.users u
+ON CONFLICT (id) DO UPDATE
+SET role = CASE
+  WHEN LOWER(EXCLUDED.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+  ELSE profiles.role
+END;
+
+-- 5. Profiles Policies Hardening
 -- Non-admin users cannot elevate their own role to 'super_admin'
 DROP POLICY IF EXISTS profiles_select ON public.profiles;
 DROP POLICY IF EXISTS profiles_update_self ON public.profiles;
@@ -60,14 +141,60 @@ CREATE POLICY profiles_insert_auth ON public.profiles
   FOR INSERT TO authenticated
   WITH CHECK (
     id = auth.uid() AND (
-      role = 'member' OR public.is_super_admin()
+      role = 'member'
+      OR public.is_super_admin()
+      OR LOWER(email) = 'realgauravpatel@gmail.com'
     )
   );
 
--- 4. Invitations Policies Hardening
--- Prevent anonymous token scraping. Tokens can be read by token lookup or by Super Admin.
+-- 6. Personal Ideas Repository (public.ideas)
+-- Strictly isolated per user via Row-Level Security
+CREATE TABLE IF NOT EXISTS public.ideas (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'note',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  status TEXT NOT NULL DEFAULT 'inbox',
+  tags TEXT[] NOT NULL DEFAULT '{}',
+  is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+CREATE INDEX IF NOT EXISTS idx_ideas_user ON public.ideas(user_id);
+CREATE INDEX IF NOT EXISTS idx_ideas_archived ON public.ideas(is_archived);
+
+ALTER TABLE public.ideas ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS ideas_owner_select ON public.ideas;
+DROP POLICY IF EXISTS ideas_owner_insert ON public.ideas;
+DROP POLICY IF EXISTS ideas_owner_update ON public.ideas;
+DROP POLICY IF EXISTS ideas_owner_delete ON public.ideas;
+
+CREATE POLICY ideas_owner_select ON public.ideas
+  FOR SELECT TO authenticated
+  USING (user_id = auth.uid());
+
+CREATE POLICY ideas_owner_insert ON public.ideas
+  FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY ideas_owner_update ON public.ideas
+  FOR UPDATE TO authenticated
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY ideas_owner_delete ON public.ideas
+  FOR DELETE TO authenticated
+  USING (user_id = auth.uid());
+
+-- 7. Invitations Policies Hardening
+-- Prevent anonymous token scraping.
 DROP POLICY IF EXISTS invitations_admin ON public.invitations;
 DROP POLICY IF EXISTS invitations_read_token ON public.invitations;
+DROP POLICY IF EXISTS invitations_read_for_redemption ON public.invitations;
 
 CREATE POLICY invitations_admin ON public.invitations
   FOR ALL TO authenticated
@@ -78,8 +205,7 @@ CREATE POLICY invitations_read_for_redemption ON public.invitations
   FOR SELECT TO authenticated, anon
   USING (accepted_at IS NULL AND expires_at > now());
 
--- 5. Safe Invitation Redemption Function
--- Validates token, marks accepted, ensures recipient matches, and assigns membership atomically
+-- 8. Safe Invitation Redemption Function
 CREATE OR REPLACE FUNCTION public.redeem_invitation_safe(inv_token TEXT, user_full_name TEXT)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -158,13 +284,11 @@ BEGIN
 END;
 $$;
 
--- 6. Storage Bucket & Policies for Document Privacy
--- Setup bucket 'project-documents' (Private)
+-- 9. Storage Bucket & Policies for Document Privacy
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('project-documents', 'project-documents', false)
 ON CONFLICT (id) DO UPDATE SET public = false;
 
--- Storage RLS: Download restricted files only if super_admin or having active approved grant
 DROP POLICY IF EXISTS "Document library download access" ON storage.objects;
 CREATE POLICY "Document library download access" ON storage.objects
   FOR SELECT TO authenticated

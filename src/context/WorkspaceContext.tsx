@@ -43,12 +43,15 @@ interface WorkspaceContextValue {
   // Auth State
   isAuthenticated: boolean;
   isCheckingAuth: boolean;
+  isPasswordRecovery: boolean;
   session: Session | null;
 
   // Auth Actions
-  signInWithGoogle: () => Promise<{ error: Error | null }>;
   signInWithEmail: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUpWithEmail: (email: string, password: string, fullName: string, inviteToken?: string) => Promise<{ error: Error | null }>;
+  signUpWithEmail: (email: string, password: string, fullName: string, inviteToken?: string) => Promise<{ error: Error | null; emailConfirmationRequired?: boolean }>;
+  resetPassword: (email: string) => Promise<{ error: Error | null }>;
+  updatePassword: (newPassword: string) => Promise<{ error: Error | null }>;
+  clearPasswordRecovery: () => void;
   signInAsPersona: (userId: string) => void;
   signOut: () => Promise<void>;
 
@@ -94,6 +97,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
   const [session, setSession] = useState<Session | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && window.location.hash.includes('type=recovery');
+  });
 
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -147,24 +153,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           return;
         }
 
-        // Only allow development-mode local persona session if Supabase is intentionally unconfigured
-        if (import.meta.env.DEV) {
-          const isLocallyAuthed = localStorage.getItem(AUTH_TOKEN_KEY) === 'true';
-          const savedUserId = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
-
-          if (isLocallyAuthed && savedUserId) {
-            const profile = workspaceRepo.getProfileById(savedUserId);
-            if (profile && isMounted) {
-              setCurrentUserId(profile.id);
-              setIsAuthenticated(true);
-              setIsCheckingAuth(false);
-              logger.info('Auth', 'Restored verified dev session for user', { user: profile.email });
-              return;
-            }
-          }
-        }
-
-        // Otherwise strictly unauthenticated
+        // Strictly unauthenticated when no live Supabase session
         if (isMounted) {
           setCurrentUserId('');
           setIsAuthenticated(false);
@@ -189,7 +178,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (supabase) {
       const { data: authListener } = supabase.auth.onAuthStateChange(async (event, newSession) => {
         logger.info('Auth', `Supabase auth event: ${event}`);
-        if (event === 'SIGNED_IN' && newSession) {
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && newSession?.user) {
           const user = newSession.user;
           const profile = await workspaceRepo.ensureAuthenticatedProfile(
             user.id,
@@ -200,13 +189,18 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setSession(newSession);
           setCurrentUserId(profile.id);
           setIsAuthenticated(true);
+          setProfiles(workspaceRepo.getProfiles());
           localStorage.setItem(AUTH_TOKEN_KEY, 'true');
           localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
           refreshWorkspace();
+        } else if (event === 'PASSWORD_RECOVERY') {
+          logger.info('Auth', 'Password recovery event detected');
+          setIsPasswordRecovery(true);
         } else if (event === 'SIGNED_OUT') {
           setSession(null);
           setCurrentUserId('');
           setIsAuthenticated(false);
+          setIsPasswordRecovery(false);
           localStorage.removeItem(AUTH_TOKEN_KEY);
           localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
         }
@@ -223,39 +217,54 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [refreshWorkspace]);
 
   // Auth Operations
-  const signInWithGoogle = useCallback(async (): Promise<{ error: Error | null }> => {
+  // Password recovery and update operations
+  const resetPassword = useCallback(async (email: string): Promise<{ error: Error | null }> => {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const { error } = await supabase.auth.signInWithOAuth({
-          provider: 'google',
-          options: {
-            redirectTo: window.location.origin,
-          },
-        });
-        if (error) return { error: new Error(error.message) };
-        return { error: null };
-      } catch (err: unknown) {
-        return { error: err instanceof Error ? err : new Error(String(err)) };
-      }
+    if (!supabase) {
+      return {
+        error: new Error(
+          'Supabase credentials are not configured. Please enter your Supabase URL and Anon Key in .env or via the Database & Auth Config panel.'
+        ),
+      };
     }
-
-    // In production, Supabase Auth is required
-    if (!import.meta.env.DEV) {
-      return { error: new Error('Supabase authentication is required. Please configure your Supabase URL and Anon Key in Database & Auth Config.') };
-    }
-
-    // Isolated Dev Demo Fallback (non-admin standard member)
-    const devMember = workspaceRepo.getProfiles().find((p) => p.role === 'member') || workspaceRepo.getProfiles()[0];
-    if (devMember) {
-      setCurrentUserId(devMember.id);
-      setIsAuthenticated(true);
-      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, devMember.id);
-      logger.info('Auth', 'Signed in via Google OAuth dev fallback', { user: devMember.email });
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/`,
+      });
+      if (error) return { error: new Error(error.message) };
       return { error: null };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err : new Error(String(err)) };
     }
-    return { error: new Error('Workspace profile initialization error.') };
+  }, []);
+
+  const updatePassword = useCallback(async (newPassword: string): Promise<{ error: Error | null }> => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      return {
+        error: new Error('Supabase authentication is not configured. Please check your credentials.'),
+      };
+    }
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+      if (error) return { error: new Error(error.message) };
+      setIsPasswordRecovery(false);
+      if (window.history.replaceState) {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+      return { error: null };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  }, []);
+
+  const clearPasswordRecovery = useCallback(() => {
+    setIsPasswordRecovery(false);
+    if (window.history.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
   }, []);
 
   const signInWithEmail = useCallback(async (email: string, password: string): Promise<{ error: Error | null }> => {
@@ -266,7 +275,18 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           email: email.trim(),
           password,
         });
-        if (error) return { error: new Error(error.message) };
+
+        if (error) {
+          let errorMsg = error.message;
+          const lower = errorMsg.toLowerCase();
+          if (lower.includes('invalid login credentials')) {
+            errorMsg = 'Invalid email or password. Please verify your credentials or use the password reset link below.';
+          } else if (lower.includes('email not confirmed')) {
+            errorMsg = 'Email address not confirmed. Please check your inbox for the verification email, or disable email verification in Supabase Dashboard (Authentication > Providers > Email).';
+          }
+          return { error: new Error(errorMsg) };
+        }
+
         if (data.user) {
           const profile = await workspaceRepo.ensureAuthenticatedProfile(
             data.user.id,
@@ -276,8 +296,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setSession(data.session);
           setCurrentUserId(profile.id);
           setIsAuthenticated(true);
+          const currentProfiles = workspaceRepo.getProfiles();
+          setProfiles(currentProfiles);
           localStorage.setItem(AUTH_TOKEN_KEY, 'true');
           localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+          refreshWorkspace();
+          // Trigger asynchronous workspace data sync with Supabase
+          workspaceRepo.syncWithSupabase(profile.id).catch((e) => {
+            logger.warn('Auth', 'Background Supabase sync notice', e);
+          });
           return { error: null };
         }
       } catch (err: unknown) {
@@ -285,27 +312,20 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    // In production, Supabase is mandatory
-    if (!import.meta.env.DEV) {
-      return { error: new Error('Supabase authentication is required. Please check your credentials or configure Supabase connection.') };
-    }
-
-    // Development fallback: check existing profiles
-    const target = workspaceRepo.getProfiles().find((p) => p.email.toLowerCase() === email.toLowerCase());
-    if (target) {
-      setCurrentUserId(target.id);
-      setIsAuthenticated(true);
-      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, target.id);
-      logger.info('Auth', 'Signed in via dev local profile', { user: target.email });
-      return { error: null };
-    }
-
-    return { error: new Error('User not found. In development mode, please choose a Dev Persona or redeem an invitation.') };
-  }, []);
+    return {
+      error: new Error(
+        'Supabase authentication is not configured. Please add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file or use Database & Auth Config above.'
+      ),
+    };
+  }, [refreshWorkspace]);
 
   const signUpWithEmail = useCallback(
-    async (email: string, password: string, fullName: string, inviteToken?: string): Promise<{ error: Error | null }> => {
+    async (
+      email: string,
+      password: string,
+      fullName: string,
+      inviteToken?: string
+    ): Promise<{ error: Error | null; emailConfirmationRequired?: boolean }> => {
       const supabase = getSupabaseClient();
       if (supabase) {
         try {
@@ -326,37 +346,32 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               data.user.email || email,
               fullName
             );
-            setSession(data.session);
-            setCurrentUserId(profile.id);
-            setIsAuthenticated(true);
-            localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-            localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
-            return { error: null };
+            if (data.session) {
+              setSession(data.session);
+              setCurrentUserId(profile.id);
+              setIsAuthenticated(true);
+              const currentProfiles = workspaceRepo.getProfiles();
+              setProfiles(currentProfiles);
+              localStorage.setItem(AUTH_TOKEN_KEY, 'true');
+              localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+              refreshWorkspace();
+              return { error: null, emailConfirmationRequired: false };
+            } else {
+              return { error: null, emailConfirmationRequired: true };
+            }
           }
         } catch (err: unknown) {
           return { error: err instanceof Error ? err : new Error(String(err)) };
         }
       }
 
-      // In production, require Supabase
-      if (!import.meta.env.DEV) {
-        return { error: new Error('Supabase Auth is required to register new users in production.') };
-      }
-
-      // Offline / Local registration in dev mode
-      const newProfile = await workspaceRepo.ensureAuthenticatedProfile(
-        `usr_${Date.now()}`,
-        email.toLowerCase(),
-        fullName
-      );
-      setCurrentUserId(newProfile.id);
-      setIsAuthenticated(true);
-      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, newProfile.id);
-      setProfiles(workspaceRepo.getProfiles());
-      return { error: null };
+      return {
+        error: new Error(
+          'Supabase authentication is required for registration. Please configure your Supabase URL and Anon Key.'
+        ),
+      };
     },
-    []
+    [refreshWorkspace]
   );
 
   const signInAsPersona = useCallback((userId: string) => {
@@ -383,6 +398,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setSession(null);
     setCurrentUserId('');
     setIsAuthenticated(false);
+    setIsPasswordRecovery(false);
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
     logger.info('Auth', 'User successfully signed out');
@@ -390,7 +406,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const currentUser = useMemo(() => {
     if (!isAuthenticated || !currentUserId) return null;
-    return profiles.find((p) => p.id === currentUserId) || null;
+    const found = profiles.find((p) => p.id === currentUserId);
+    if (found) return found;
+    // Guaranteed fallback: read directly from repository store if React state has not flushed yet
+    return workspaceRepo.getProfileById(currentUserId) || null;
   }, [profiles, currentUserId, isAuthenticated]);
 
   const isSuperAdmin = currentUser?.role === 'super_admin';
@@ -744,11 +763,14 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         isAuthenticated,
         isCheckingAuth,
+        isPasswordRecovery,
         session,
 
-        signInWithGoogle,
         signInWithEmail,
         signUpWithEmail,
+        resetPassword,
+        updatePassword,
+        clearPasswordRecovery,
         signInAsPersona,
         signOut,
 

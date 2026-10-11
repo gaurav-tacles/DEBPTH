@@ -1,20 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Lock,
   Mail,
   Key,
   Shield,
   ArrowRight,
-  Sparkles,
   CheckCircle2,
   AlertCircle,
   Eye,
   EyeOff,
   Database,
-  ExternalLink,
-  UserCheck,
   RefreshCw,
-  Terminal,
+  ArrowLeft,
+  Info,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import {
@@ -26,18 +24,26 @@ import {
 
 export const AuthScreen: React.FC = () => {
   const {
-    signInWithGoogle,
     signInWithEmail,
     signUpWithEmail,
     redeemInvitation,
+    resetPassword,
+    updatePassword,
+    isPasswordRecovery,
+    clearPasswordRecovery,
   } = useWorkspace();
 
-  const [mode, setMode] = useState<'signin' | 'invite' | 'config'>('signin');
+  const [mode, setMode] = useState<'signin' | 'invite' | 'forgot' | 'reset-password' | 'config'>(() => {
+    return isPasswordRecovery ? 'reset-password' : 'signin';
+  });
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [inviteToken, setInviteToken] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -51,21 +57,13 @@ export const AuthScreen: React.FC = () => {
 
   const hasConfiguredSupabase = isSupabaseConfigured();
 
-  // Handle Google OAuth
-  const handleGoogleSignIn = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await signInWithGoogle();
-      if (res.error) {
-        setError(res.error.message || 'Failed to authenticate with Google.');
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Google authentication failed');
-    } finally {
-      setLoading(false);
+  // Switch to reset-password mode if password recovery hash/event is detected
+  useEffect(() => {
+    if (isPasswordRecovery) {
+      setMode('reset-password');
+      setError(null);
     }
-  };
+  }, [isPasswordRecovery]);
 
   // Handle Email + Password Sign In
   const handleEmailSignIn = async (e: React.FormEvent) => {
@@ -75,8 +73,16 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
+    if (!hasConfiguredSupabase) {
+      setError(
+        'Supabase authentication is not configured yet. Please enter your project URL and Anon key in the Database Config panel (top right) or configure .env.'
+      );
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    setSuccessMessage(null);
     try {
       const res = await signInWithEmail(email.trim(), password);
       if (res.error) {
@@ -100,11 +106,21 @@ export const AuthScreen: React.FC = () => {
       setError('Full name and email are required.');
       return;
     }
+    if (!password || password.length < 6) {
+      setError('Please choose a password with at least 6 characters.');
+      return;
+    }
+
+    if (!hasConfiguredSupabase) {
+      setError('Supabase credentials are required to complete account registration.');
+      return;
+    }
 
     setLoading(true);
     setError(null);
+    setSuccessMessage(null);
     try {
-      // Redeem invitation and verify matching email and token validity
+      // 1. Redeem invitation and verify matching email and token validity
       try {
         redeemInvitation(inviteToken.trim(), fullName.trim(), email.trim());
       } catch (repoErr: unknown) {
@@ -113,10 +129,14 @@ export const AuthScreen: React.FC = () => {
         return;
       }
 
-      setSuccessMessage('Invitation verified! Signing you in...');
-      const res = await signUpWithEmail(email.trim(), password || 'ApexDev#2026', fullName.trim(), inviteToken.trim());
+      setSuccessMessage('Invitation token verified! Registering account...');
+      const res = await signUpWithEmail(email.trim(), password, fullName.trim(), inviteToken.trim());
       if (res.error) {
         setError(res.error.message || 'Failed to complete registration.');
+      } else if (res.emailConfirmationRequired) {
+        setSuccessMessage(
+          'Registration submitted! A confirmation email has been sent. Please verify your email or sign in once confirmed.'
+        );
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to redeem invitation.');
@@ -125,14 +145,75 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  function loggerWarn(err: unknown) {
-    console.warn(err);
-  }
+  // Handle Requesting Password Reset Link
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) {
+      setError('Please enter your registered email address.');
+      return;
+    }
 
-  // Handle saving Supabase credentials
+    if (!hasConfiguredSupabase) {
+      setError('Supabase is not configured. Please configure your project credentials to enable password recovery.');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      const res = await resetPassword(email.trim());
+      if (res.error) {
+        setError(res.error.message || 'Failed to send password reset email.');
+      } else {
+        setSuccessMessage(
+          `Password reset link sent to ${email.trim()}. Please check your email inbox (and spam folder) for instructions.`
+        );
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to initiate password reset.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle Setting New Password during Recovery
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password || password.length < 6) {
+      setError('New password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      const res = await updatePassword(password);
+      if (res.error) {
+        setError(res.error.message || 'Failed to update password.');
+      } else {
+        setSuccessMessage('Password updated successfully! Signing you into your workspace...');
+        setTimeout(() => {
+          setMode('signin');
+          clearPasswordRecovery();
+        }, 1500);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Password update failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle saving Supabase credentials in browser storage
   const handleSaveConfig = () => {
     saveSupabaseConfig(supabaseConfig.url.trim(), supabaseConfig.anonKey.trim());
-    setSuccessMessage('Supabase credentials updated!');
+    setSuccessMessage('Supabase credentials saved successfully!');
     setTimeout(() => setSuccessMessage(null), 3000);
   };
 
@@ -156,28 +237,32 @@ export const AuthScreen: React.FC = () => {
           </div>
           <div>
             <div className="font-bold text-sm tracking-tight text-[#F4F8FF] flex items-center gap-2">
-              <span>Project Apex</span>
+              <span>ProjectHub</span>
               <span className="font-mono text-[9px] uppercase font-semibold text-[#8B5CF6] bg-[#8B5CF6]/15 border border-[#8B5CF6]/30 px-1.5 py-0.5 rounded">
-                Private Workspace
+                Unified Portal
               </span>
             </div>
-            <p className="text-[11px] text-[#B4B0B0] font-mono">Restricted Access Protocol</p>
+            <p className="text-[11px] text-[#B4B0B0] font-mono">Single Entry Authentication</p>
           </div>
         </div>
 
-        {/* Database Status Pill */}
+        {/* Database Status Button */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setMode(mode === 'config' ? 'signin' : 'config')}
-            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-mono transition ${
+            onClick={() => {
+              setMode(mode === 'config' ? 'signin' : 'config');
+              setError(null);
+            }}
+            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-mono transition cursor-pointer ${
               hasConfiguredSupabase
                 ? 'border-[#34D399]/40 bg-[#34D399]/10 text-[#34D399] hover:bg-[#34D399]/20'
-                : 'border-[#38302D] bg-[#191311] text-[#B4B0B0] hover:border-[#8B5CF6]/40 hover:text-[#F4F8FF]'
+                : 'border-[#FB7185]/40 bg-[#FB7185]/10 text-[#FB7185] hover:border-[#FB7185]/60 hover:text-white'
             }`}
+            title="Configure or test Supabase connection"
           >
             <Database className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">
-              {hasConfiguredSupabase ? 'Supabase Live' : 'Supabase Offline Mode'}
+              {hasConfiguredSupabase ? 'Supabase Connected' : 'Supabase Not Configured'}
             </span>
           </button>
         </div>
@@ -189,165 +274,182 @@ export const AuthScreen: React.FC = () => {
           {/* Header */}
           <div className="text-center mb-6">
             <h1 className="text-2xl font-bold tracking-tight text-[#F4F8FF]">
-              {mode === 'signin' && 'Workspace Sign In'}
-              {mode === 'invite' && 'Redeem Invitation'}
+              {mode === 'signin' && 'Sign In to Workspace'}
+              {mode === 'invite' && 'Redeem Team Invitation'}
+              {mode === 'forgot' && 'Reset Password'}
+              {mode === 'reset-password' && 'Set New Password'}
               {mode === 'config' && 'Database & Auth Config'}
             </h1>
-            <p className="text-xs text-[#B4B0B0] mt-1.5">
-              {mode === 'signin' && 'Unified portal for Super Admin and invited team members. Sign in to access your workspace.'}
-              {mode === 'invite' && 'Join the private workspace with your token provided by the Super Admin.'}
-              {mode === 'config' && 'Configure or verify your Supabase PostgreSQL and Auth credentials.'}
+            <p className="text-xs text-[#B4B0B0] mt-1.5 leading-relaxed">
+              {mode === 'signin' &&
+                'Single login portal for the Super Admin and all invited team members. Sign in with your email and password.'}
+              {mode === 'invite' &&
+                'Join the workspace using your single-use invitation token provided by the Super Admin.'}
+              {mode === 'forgot' &&
+                'Enter your account email. Supabase Auth will send you a secure password recovery link.'}
+              {mode === 'reset-password' &&
+                'Enter a new password for your account to complete password recovery.'}
+              {mode === 'config' &&
+                'Provide your Supabase URL and anon/publishable key to connect to live authentication.'}
             </p>
           </div>
 
-          {/* Single Unified Entry Point Tabs: Sign In / Redeem Invitation */}
-          <div className="grid grid-cols-2 gap-1 rounded-xl bg-[#0F0B0A] p-1 border border-[#38302D] mb-6 text-xs font-medium">
-            <button
-              onClick={() => {
-                setMode('signin');
-                setError(null);
-              }}
-              className={`rounded-lg py-1.5 transition ${
-                mode === 'signin'
-                  ? 'bg-[#211B19] text-[#F4F8FF] font-semibold shadow-xs border border-[#38302D]'
-                  : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              onClick={() => {
-                setMode('invite');
-                setError(null);
-              }}
-              className={`rounded-lg py-1.5 transition ${
-                mode === 'invite'
-                  ? 'bg-[#211B19] text-[#F4F8FF] font-semibold shadow-xs border border-[#38302D]'
-                  : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
-              }`}
-            >
-              Redeem Invitation
-            </button>
-          </div>
+          {/* Unconfigured Alert Banner */}
+          {!hasConfiguredSupabase && mode !== 'config' && (
+            <div className="mb-4 rounded-xl border border-[#F59E0B]/40 bg-[#F59E0B]/10 p-3 text-xs text-[#F59E0B]">
+              <div className="flex items-start gap-2">
+                <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-white">Supabase credentials needed</div>
+                  <p className="mt-0.5 text-[11px] text-[#F59E0B]/90">
+                    Live email & password authentication requires your Supabase project parameters. Click below to configure them.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setMode('config')}
+                    className="mt-2 text-[11px] font-semibold underline hover:text-white"
+                  >
+                    Open Database & Auth Config →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
-          {/* Alerts */}
+          {/* Navigation Tabs (Only in signin & invite modes) */}
+          {(mode === 'signin' || mode === 'invite') && (
+            <div className="grid grid-cols-2 gap-1 rounded-xl bg-[#0F0B0A] p-1 border border-[#38302D] mb-6 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('signin');
+                  setError(null);
+                  setSuccessMessage(null);
+                }}
+                className={`rounded-lg py-1.5 transition ${
+                  mode === 'signin'
+                    ? 'bg-[#211B19] text-[#F4F8FF] font-semibold shadow-xs border border-[#38302D]'
+                    : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
+                }`}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('invite');
+                  setError(null);
+                  setSuccessMessage(null);
+                }}
+                className={`rounded-lg py-1.5 transition ${
+                  mode === 'invite'
+                    ? 'bg-[#211B19] text-[#F4F8FF] font-semibold shadow-xs border border-[#38302D]'
+                    : 'text-[#B4B0B0] hover:text-[#F4F8FF]'
+                }`}
+              >
+                Redeem Invitation
+              </button>
+            </div>
+          )}
+
+          {/* Error Alert */}
           {error && (
             <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-[#FB7185]/40 bg-[#FB7185]/10 p-3 text-xs text-[#FB7185]">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+              <span className="leading-relaxed">{error}</span>
             </div>
           )}
 
+          {/* Success Alert */}
           {successMessage && (
             <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-[#34D399]/40 bg-[#34D399]/10 p-3 text-xs text-[#34D399]">
               <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{successMessage}</span>
+              <span className="leading-relaxed">{successMessage}</span>
             </div>
           )}
 
-          {/* 1. SIGN IN MODE */}
+          {/* 1. SIGN IN FORM */}
           {mode === 'signin' && (
-            <div className="space-y-4">
-              {/* Google OAuth Button */}
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={loading}
-                className="w-full flex items-center justify-center gap-3 rounded-xl border border-[#38302D] bg-[#211B19] py-2.5 px-4 text-xs font-semibold text-[#F4F8FF] hover:border-[#8B5CF6]/50 hover:bg-[#211B19]/80 transition cursor-pointer shadow-xs"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
-                  <path
-                    fill="#EA4335"
-                    d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.3 9 5 12 5z"
+            <form onSubmit={handleEmailSignIn} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
+                  Email Address
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="realgauravpatel@gmail.com"
+                    autoComplete="email"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
                   />
-                  <path
-                    fill="#4285F4"
-                    d="M23.5 12.3c0-.8-.1-1.7-.2-2.3H12v4.6h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.9z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3 0-.8.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.2c0 2.8.7 5.5 1.9 7.8l3.7-2.9z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2-6.4-4.8L1.9 16.9C3.7 20.6 7.5 23.5 12 23.5z"
-                  />
-                </svg>
-                <span>Continue with Google</span>
-              </button>
-
-              <div className="relative my-4 flex items-center justify-center">
-                <div className="w-full border-t border-[#38302D]" />
-                <span className="absolute bg-[#191311] px-3 font-mono text-[10px] uppercase text-[#B4B0B0]">
-                  or email login
-                </span>
+                </div>
               </div>
 
-              {/* Email + Password Form */}
-              <form onSubmit={handleEmailSignIn} className="space-y-3.5">
-                <div>
-                  <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
-                    Work Email
-                  </label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="developer@team.com"
-                      className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-[#B4B0B0]">
                     Password
                   </label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••••••"
-                      className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-9 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-2.5 text-[#B4B0B0] hover:text-[#F4F8FF]"
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('forgot');
+                      setError(null);
+                      setSuccessMessage(null);
+                    }}
+                    className="text-[11px] text-[#8B5CF6] hover:text-[#A78BFA] transition"
+                  >
+                    Forgot password?
+                  </button>
                 </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••••"
+                    autoComplete="current-password"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-9 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-[#B4B0B0] hover:text-[#F4F8FF] transition cursor-pointer"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
 
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2.5 px-4 text-xs font-semibold text-white transition shadow-lg shadow-[#8B5CF6]/20 cursor-pointer disabled:opacity-50"
-                >
-                  {loading ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <>
-                      <span>Sign In to Workspace</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
-                </button>
-              </form>
-
-            </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2.5 px-4 text-xs font-semibold text-white transition shadow-lg shadow-[#8B5CF6]/20 cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <span>Sign In to Workspace</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+            </form>
           )}
 
           {/* 2. INVITATION REDEMPTION MODE */}
           {mode === 'invite' && (
             <form onSubmit={handleInviteRegistration} className="space-y-3.5">
-              <div className="rounded-xl border border-[#38302D] bg-[#211B19]/40 p-3 text-[11px] text-[#B4B0B0]">
-                Registration is reserved for invited team members. Enter the invitation token issued by the Super Admin to join.
+              <div className="rounded-xl border border-[#38302D] bg-[#211B19]/40 p-3 text-[11px] text-[#B4B0B0] leading-relaxed">
+                Registration is reserved for invited team members. Enter the invitation token issued by the Super Admin to activate your standard member access.
               </div>
 
               <div>
@@ -376,7 +478,7 @@ export const AuthScreen: React.FC = () => {
                   required
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="e.g. Jane Doe"
+                  placeholder="e.g. Alex Rivera"
                   className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none"
                 />
               </div>
@@ -385,28 +487,42 @@ export const AuthScreen: React.FC = () => {
                 <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
                   Invited Email Address *
                 </label>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="colleague@domain.com"
-                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
-                />
+                <div className="relative">
+                  <Mail className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="colleague@domain.com"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                  />
+                </div>
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
                   Account Password *
                 </label>
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
-                />
+                <div className="relative">
+                  <Lock className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="•••••••••••• (min 6 chars)"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-9 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-[#B4B0B0] hover:text-[#F4F8FF] transition cursor-pointer"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <button
@@ -426,11 +542,146 @@ export const AuthScreen: React.FC = () => {
             </form>
           )}
 
-          {/* 4. SUPABASE CONFIGURATION DRAWER */}
+          {/* 3. FORGOT PASSWORD MODE */}
+          {mode === 'forgot' && (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
+                  Registered Email Address
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="realgauravpatel@gmail.com"
+                    autoComplete="email"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2.5 px-4 text-xs font-semibold text-white transition shadow-lg shadow-[#8B5CF6]/20 cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <span>Send Password Reset Link</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('signin');
+                  setError(null);
+                  setSuccessMessage(null);
+                }}
+                className="w-full flex items-center justify-center gap-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF] transition pt-2"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Sign In</span>
+              </button>
+            </form>
+          )}
+
+          {/* 4. SET NEW PASSWORD (RECOVERY) MODE */}
+          {mode === 'reset-password' && (
+            <form onSubmit={handleUpdatePassword} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
+                  New Password *
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="•••••••••••• (min 6 chars)"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-9 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-[#B4B0B0] hover:text-[#F4F8FF] transition cursor-pointer"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
+                  Confirm New Password *
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    required
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="••••••••••••"
+                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-9 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-3 top-2.5 text-[#B4B0B0] hover:text-[#F4F8FF] transition cursor-pointer"
+                    aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2.5 px-4 text-xs font-semibold text-white transition shadow-lg shadow-[#8B5CF6]/20 cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <span>Update Password & Enter Workspace</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('signin');
+                  clearPasswordRecovery();
+                  setError(null);
+                  setSuccessMessage(null);
+                }}
+                className="w-full flex items-center justify-center gap-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF] transition pt-2"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </button>
+            </form>
+          )}
+
+          {/* 5. SUPABASE CONFIGURATION DRAWER */}
           {mode === 'config' && (
             <div className="space-y-3.5 text-xs">
               <p className="text-[#B4B0B0] text-[11px] leading-relaxed">
-                Enter your Supabase project parameters to connect live cloud PostgreSQL storage with Row-Level Security (RLS).
+                Configure your Supabase project parameters below to connect to live authentication and PostgreSQL storage.
               </p>
 
               <div>
@@ -441,7 +692,7 @@ export const AuthScreen: React.FC = () => {
                   type="text"
                   value={supabaseConfig.url}
                   onChange={(e) => setSupabaseConfig({ ...supabaseConfig, url: e.target.value })}
-                  placeholder="https://your-project.supabase.co"
+                  placeholder="https://xyzcompany.supabase.co"
                   className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/40 font-mono focus:border-[#8B5CF6] focus:outline-none"
                 />
               </div>
@@ -475,7 +726,7 @@ export const AuthScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleSaveConfig}
-                  className="flex-1 rounded-xl bg-[#211B19] border border-[#38302D] hover:border-[#8B5CF6] py-2 text-xs font-semibold text-[#F4F8FF] transition"
+                  className="flex-1 rounded-xl bg-[#211B19] border border-[#38302D] hover:border-[#8B5CF6] py-2 text-xs font-semibold text-[#F4F8FF] transition cursor-pointer"
                 >
                   Save Config
                 </button>
@@ -483,12 +734,25 @@ export const AuthScreen: React.FC = () => {
                   type="button"
                   onClick={handleTestConnection}
                   disabled={testStatus.testing}
-                  className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2 text-xs font-semibold text-white transition"
+                  className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2 text-xs font-semibold text-white transition cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${testStatus.testing ? 'animate-spin' : ''}`} />
                   <span>{testStatus.testing ? 'Testing...' : 'Test Connection'}</span>
                 </button>
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('signin');
+                  setError(null);
+                  setSuccessMessage(null);
+                }}
+                className="w-full flex items-center justify-center gap-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF] transition pt-2"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Return to Sign In</span>
+              </button>
             </div>
           )}
 
@@ -496,7 +760,7 @@ export const AuthScreen: React.FC = () => {
           <div className="mt-6 pt-4 border-t border-[#38302D]/60 flex items-center justify-between text-[10px] text-[#B4B0B0] font-mono">
             <span className="flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-[#34D399]" />
-              <span>TLS 1.3 / RLS Protected</span>
+              <span>TLS / PostgreSQL RLS Enforced</span>
             </span>
             <span>Single Super Admin</span>
           </div>
@@ -506,7 +770,7 @@ export const AuthScreen: React.FC = () => {
       {/* Footer */}
       <footer className="relative z-10 w-full max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between text-[11px] text-[#B4B0B0] py-4 gap-2">
         <div>
-          &copy; {new Date().getFullYear()} Project Apex. Private Developer Workspace.
+          &copy; {new Date().getFullYear()} ProjectHub. Private Developer Workspace.
         </div>
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5">
@@ -514,7 +778,7 @@ export const AuthScreen: React.FC = () => {
             <span>PWA Ready & Offline First</span>
           </span>
           <span>·</span>
-          <span>Security Hardened</span>
+          <span>Server-Side Super Admin</span>
         </div>
       </footer>
     </div>

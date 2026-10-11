@@ -13,6 +13,7 @@ import { MilestonesView } from './components/milestones/MilestonesView';
 import { DocumentsView } from './components/documents/DocumentsView';
 import { SuggestionsView } from './components/suggestions/SuggestionsView';
 import { TeamDirectory } from './components/team/TeamDirectory';
+import { BuiltByUsView } from './components/portfolio/BuiltByUsView';
 import { IdeasView } from './components/ideas/IdeasView';
 import { IdeaCaptureModal } from './components/ideas/IdeaCaptureModal';
 import { AnnouncementsView } from './components/announcements/AnnouncementsView';
@@ -47,15 +48,16 @@ const WorkspaceShell: React.FC = () => {
       {/* Top Application Header */}
       <AppHeader
         currentView={currentView}
+        onNavigate={handleNavigate}
         onToggleMobileNav={() => setIsMobileNavOpen(!isMobileNavOpen)}
         onOpenNotifications={() => setIsNotificationsOpen(true)}
       />
 
       {/* Main Container with Sidebar + Main View */}
-      <div className="flex flex-1 w-full max-w-7xl mx-auto">
+      <div className="flex flex-1 w-full min-h-0">
         <AppSidebar currentView={currentView} onNavigate={handleNavigate} />
 
-        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 pb-20 md:pb-8">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 pb-20 md:pb-8 overflow-y-auto">
           {currentView === 'overview' && (
             <DashboardView
               onNavigateToProjects={() => setCurrentView('projects')}
@@ -81,6 +83,8 @@ const WorkspaceShell: React.FC = () => {
               onNavigateToDocs={() => setCurrentView('documents')}
             />
           )}
+
+          {currentView === 'built-by-us' && <BuiltByUsView />}
 
           {currentView === 'team' && <TeamDirectory />}
 

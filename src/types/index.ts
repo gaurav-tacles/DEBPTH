@@ -11,6 +11,7 @@ export interface UserProfile {
   email: string;
   fullName: string;
   avatarUrl?: string;
+  bio?: string;
   role: UserRole;
   labels: string[]; // Custom labels e.g. ['Backend', 'Security', 'Frontend', 'DevOps']
   githubUsername?: string;

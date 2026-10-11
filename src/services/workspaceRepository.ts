@@ -316,15 +316,18 @@ class WorkspaceRepository {
 
     const supabase = getSupabaseClient();
     if (supabase) {
+      const payload: Record<string, unknown> = {};
+      if (updates.fullName !== undefined) payload.full_name = updates.fullName;
+      if (updates.avatarUrl !== undefined) payload.avatar_url = updates.avatarUrl;
+      if (updates.bio !== undefined) payload.bio = updates.bio;
+      if (updates.labels !== undefined) payload.labels = updates.labels;
+      if (updates.mfaEnabled !== undefined) payload.mfa_enabled = updates.mfaEnabled;
+      if (updates.githubUsername !== undefined) payload.github_username = updates.githubUsername;
+
       Promise.resolve(
         supabase
           .from('profiles')
-          .update({
-            full_name: updates.fullName,
-            labels: updates.labels,
-            mfa_enabled: updates.mfaEnabled,
-            github_username: updates.githubUsername,
-          })
+          .update(payload)
           .eq('id', id)
       )
         .then(() => logger.info('WorkspaceRepository', 'Synced profile update to Supabase'))
@@ -496,6 +499,65 @@ class WorkspaceRepository {
     });
 
     return this.getProjectById(projectId)!;
+  }
+
+  deleteProjectSecure(projectId: string, actorEmail: string): boolean {
+    const isEligible = actorEmail.trim().toLowerCase() === 'realgauravpatel@gmail.com';
+    const profile = this.getProfileByEmail(actorEmail);
+    if (!isEligible || profile?.role !== 'super_admin') {
+      logger.error('WorkspaceRepository', 'Unauthorized deletion attempt blocked', { actorEmail, projectId });
+      throw new Error('Unauthorized: Destructive operations require verified Super Admin privileges (realgauravpatel@gmail.com).');
+    }
+
+    const project = this.db.projects.find((p) => p.id === projectId);
+    if (!project) return false;
+
+    // Cascading local cleanup: tasks, milestones, documents, grants, members, project
+    const remainingTasks = this.db.tasks.filter((t) => t.projectId !== projectId);
+    const remainingMilestones = this.db.milestones.filter((m) => m.projectId !== projectId);
+    const projectDocIds = this.db.documents.filter((d) => d.projectId === projectId).map((d) => d.id);
+    const remainingDocs = this.db.documents.filter((d) => d.projectId !== projectId);
+    const remainingGrants = this.db.documentGrants.filter((g) => !projectDocIds.includes(g.documentId));
+    const remainingMembers = this.db.projectMembers.filter((pm) => pm.projectId !== projectId);
+    const remainingProjects = this.db.projects.filter((p) => p.id !== projectId);
+
+    const auditEvent: ActivityEvent = {
+      id: `act-${Date.now()}`,
+      projectId,
+      userId: profile.id,
+      action: 'project_deleted',
+      details: `Permanently deleted project "${project.name}" (cascade: tasks, milestones, documents)`,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.saveDatabase({
+      ...this.db,
+      projects: remainingProjects,
+      tasks: remainingTasks,
+      milestones: remainingMilestones,
+      documents: remainingDocs,
+      documentGrants: remainingGrants,
+      projectMembers: remainingMembers,
+      activityLogs: [auditEvent, ...this.db.activityLogs],
+    });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.rpc('secure_delete_project', { target_project_id: projectId })
+      ).catch(() => {
+        Promise.all([
+          supabase.from('tasks').delete().eq('project_id', projectId),
+          supabase.from('milestones').delete().eq('project_id', projectId),
+          supabase.from('documents').delete().eq('project_id', projectId),
+          supabase.from('project_members').delete().eq('project_id', projectId),
+          supabase.from('projects').delete().eq('id', projectId),
+        ]).catch((e) => logger.warn('WorkspaceRepository', 'Supabase delete cascade warning', e));
+      });
+    }
+
+    logger.info('WorkspaceRepository', `Project securely deleted: ${project.name} (${projectId})`);
+    return true;
   }
 
   // Project Members
