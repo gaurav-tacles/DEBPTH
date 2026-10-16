@@ -16,6 +16,9 @@ import {
   Shield,
   Tag,
   Sparkles,
+  Ban,
+  Clock,
+  AlertTriangle,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { UserProfile } from '../../types';
@@ -29,6 +32,7 @@ export const TeamDirectory: React.FC = () => {
     currentUser,
     invitations,
     createInvitation,
+    revokeInvitation,
     updateProfileLabels,
     projects,
   } = useWorkspace();
@@ -388,13 +392,160 @@ export const TeamDirectory: React.FC = () => {
         </div>
       )}
 
-      {/* 5. Modals for Inviting and Redeeming */}
+      {/* 5. Pending & Recent Invitations Table (Authorized Super Admin & Project Leads) */}
+      <div className="rounded-2xl border border-[#38302D] bg-[#191311] p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#38302D] pb-3">
+          <div className="flex items-center gap-2">
+            <Mail className="w-4 h-4 text-[#8B5CF6]" />
+            <h2 className="text-sm font-semibold text-[#F4F8FF]">
+              Workspace & Project Invitations
+            </h2>
+            <span className="text-[10px] font-mono bg-[#211B19] text-[#B4B0B0] px-2 py-0.5 rounded border border-[#38302D]">
+              {invitations.length} total
+            </span>
+          </div>
+          <p className="text-[11px] text-[#B4B0B0]">
+            Single-use cryptographic tokens with automated expiration & revocation
+          </p>
+        </div>
+
+        {invitations.length === 0 ? (
+          <div className="py-8 text-center text-xs text-[#B4B0B0] space-y-1">
+            <p>No invitations have been issued yet.</p>
+            <p className="text-[11px] text-[#B4B0B0]/60">
+              Click "Invite member" to generate a secure single-use invitation link.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto -mx-1 sm:mx-0">
+            <table className="w-full text-left text-xs min-w-[540px]">
+              <thead className="border-b border-[#38302D] bg-[#0F0B0A]/60 text-[10px] font-mono uppercase text-[#B4B0B0]">
+                <tr>
+                  <th className="py-2.5 px-3">Invited Email</th>
+                  <th className="py-2.5 px-3">Role & Scope</th>
+                  <th className="py-2.5 px-3">Status</th>
+                  <th className="py-2.5 px-3">Expiration</th>
+                  <th className="py-2.5 px-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#38302D]/60 text-xs">
+                {invitations.map((inv) => {
+                  const isExpired = new Date(inv.expiresAt) <= new Date();
+                  const isRevoked = Boolean(inv.revokedAt || inv.status === 'revoked');
+                  const isAccepted = Boolean(inv.acceptedAt || inv.status === 'accepted');
+                  const isPending = !isRevoked && !isAccepted && !isExpired;
+
+                  const assignedNames = (inv.assignedProjectIds || [])
+                    .map((id) => projects.find((p) => p.id === id)?.name)
+                    .filter(Boolean);
+
+                  return (
+                    <tr key={inv.id} className="hover:bg-[#211B19]/50 transition">
+                      <td className="py-2.5 px-3">
+                        <div className="font-medium text-[#F4F8FF] font-mono">{inv.email}</div>
+                        <div className="text-[10px] text-[#B4B0B0]">
+                          Issued {new Date(inv.createdAt).toLocaleDateString()}
+                        </div>
+                      </td>
+
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span
+                            className={`font-mono text-[9px] uppercase px-1.5 py-0.5 rounded border ${
+                              inv.role === 'super_admin'
+                                ? 'bg-[#8B5CF6]/20 text-[#8B5CF6] border-[#8B5CF6]/40'
+                                : 'bg-[#211B19] text-[#B4B0B0] border-[#38302D]'
+                            }`}
+                          >
+                            {inv.role}
+                          </span>
+                          {assignedNames.length > 0 ? (
+                            <span className="text-[10px] text-[#8B5CF6] font-mono truncate max-w-[140px]">
+                              {assignedNames.join(', ')}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-[#B4B0B0]/60">Full Workspace</span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td className="py-2.5 px-3">
+                        {isAccepted && (
+                          <span className="inline-flex items-center gap-1 rounded bg-[#34D399]/20 text-[#34D399] px-2 py-0.5 text-[10px] font-mono border border-[#34D399]/30">
+                            <Check className="w-3 h-3" />
+                            <span>Accepted</span>
+                          </span>
+                        )}
+                        {isRevoked && (
+                          <span className="inline-flex items-center gap-1 rounded bg-[#FB7185]/20 text-[#FB7185] px-2 py-0.5 text-[10px] font-mono border border-[#FB7185]/30">
+                            <Ban className="w-3 h-3" />
+                            <span>Revoked</span>
+                          </span>
+                        )}
+                        {isExpired && !isAccepted && !isRevoked && (
+                          <span className="inline-flex items-center gap-1 rounded bg-[#F59E0B]/20 text-[#F59E0B] px-2 py-0.5 text-[10px] font-mono border border-[#F59E0B]/30">
+                            <Clock className="w-3 h-3" />
+                            <span>Expired</span>
+                          </span>
+                        )}
+                        {isPending && (
+                          <span className="inline-flex items-center gap-1 rounded bg-[#8B5CF6]/20 text-[#8B5CF6] px-2 py-0.5 text-[10px] font-mono border border-[#8B5CF6]/30">
+                            <Clock className="w-3 h-3" />
+                            <span>Pending</span>
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-[#B4B0B0]">
+                        {new Date(inv.expiresAt).toLocaleDateString()}
+                      </td>
+
+                      <td className="py-2.5 px-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {isPending && inv.token && (
+                            <button
+                              onClick={() => {
+                                const link = `${window.location.origin}/#invite=${inv.token}`;
+                                handleCopy(link);
+                              }}
+                              className="rounded px-2 py-1 text-[11px] font-semibold bg-[#211B19] text-[#F4F8FF] hover:bg-[#38302D] border border-[#38302D] transition cursor-pointer"
+                              title="Copy direct invitation URL"
+                            >
+                              Copy Link
+                            </button>
+                          )}
+                          {isPending && (
+                            <button
+                              onClick={() => {
+                                revokeInvitation(inv.id);
+                                setCopiedText(`Revoked invitation for ${inv.email}`);
+                                setTimeout(() => setCopiedText(null), 2500);
+                              }}
+                              className="rounded px-2 py-1 text-[11px] font-semibold text-[#FB7185] hover:bg-[#FB7185]/10 border border-[#FB7185]/30 transition cursor-pointer"
+                              title="Revoke pending token immediately"
+                            >
+                              Revoke
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* 6. Modals for Inviting and Redeeming */}
       <InviteMemberModal
         isOpen={isInviteModalOpen}
         onClose={() => setIsInviteModalOpen(false)}
         projects={projects}
-        onInvite={(email, role, initialLabels, assignedProjectIds, expiresInDays) =>
-          createInvitation(email, role, initialLabels, assignedProjectIds, expiresInDays)
+        isSuperAdmin={isSuperAdmin}
+        onInvite={(email, role, initialLabels, assignedProjectIds, expiresInDays, invitedProjectRole) =>
+          createInvitation(email, role, initialLabels, assignedProjectIds, expiresInDays, invitedProjectRole)
         }
       />
 

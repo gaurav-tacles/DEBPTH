@@ -10,6 +10,8 @@ import {
   Bell,
   ShieldCheck,
   Settings,
+  User,
+  Heart,
   LucideIcon,
 } from 'lucide-react';
 
@@ -17,7 +19,7 @@ export type NavView =
   | 'overview'
   | 'projects'
   | 'project-detail'
-  | 'built-by-us'
+  | 'about-creator'
   | 'ideas'
   | 'team'
   | 'suggestions'
@@ -25,7 +27,8 @@ export type NavView =
   | 'documents'
   | 'announcements'
   | 'security'
-  | 'settings';
+  | 'settings'
+  | 'profile';
 
 export interface NavItemConfig {
   id: NavView;
@@ -54,11 +57,10 @@ export const NAVIGATION_ITEMS: NavItemConfig[] = [
     section: 'workspace',
   },
   {
-    id: 'built-by-us',
-    label: 'Built by Us',
-    shortLabel: 'Showcase',
-    icon: Sparkles,
-    featured: true,
+    id: 'about-creator',
+    label: 'About the Creator',
+    shortLabel: 'About',
+    icon: Heart,
     section: 'showcase',
   },
   {
@@ -120,6 +122,13 @@ export const NAVIGATION_ITEMS: NavItemConfig[] = [
     icon: Settings,
     section: 'system',
   },
+  {
+    id: 'profile',
+    label: 'Profile & Security',
+    shortLabel: 'Profile',
+    icon: User,
+    section: 'system',
+  },
 ];
 
 export function getBreadcrumbTitle(view: NavView): string {
@@ -129,8 +138,8 @@ export function getBreadcrumbTitle(view: NavView): string {
     case 'projects':
     case 'project-detail':
       return 'Projects';
-    case 'built-by-us':
-      return 'Built by Us';
+    case 'about-creator':
+      return 'About the Creator';
     case 'ideas':
       return 'Ideas & Notes';
     case 'team':
@@ -147,6 +156,8 @@ export function getBreadcrumbTitle(view: NavView): string {
       return 'Access & Security';
     case 'settings':
       return 'Settings & Database';
+    case 'profile':
+      return 'Profile & Security';
     default:
       return 'Workspace';
   }

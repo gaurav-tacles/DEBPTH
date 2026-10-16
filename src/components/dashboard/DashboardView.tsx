@@ -66,7 +66,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center flex-wrap gap-2 text-xs">
           <div className="rounded-xl border border-[#38302D] bg-[#191311] px-3 py-1.5 text-[#B4B0B0]">
             <span>Accessible Projects:</span>{' '}
             <strong className="text-[#F4F8FF] font-mono">{projects.length}</strong>

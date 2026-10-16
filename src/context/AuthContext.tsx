@@ -233,10 +233,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(true);
 
       try {
-        // If invitation token provided, redeem it
+        // If invitation token provided, redeem it and verify matching email
         if (inviteToken) {
           try {
-            workspaceRepo.redeemInvitation(inviteToken, fullName);
+            workspaceRepo.redeemInvitation(inviteToken, fullName, email.trim().toLowerCase());
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : 'Invalid invitation token.';
             setError(msg);

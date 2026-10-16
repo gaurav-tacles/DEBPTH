@@ -24,7 +24,7 @@ export const PWAInstallButton: React.FC = () => {
         onClick={handleInstallClick}
         disabled={installing}
         className="flex items-center gap-2 rounded-lg bg-indigo-600/90 hover:bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm border border-indigo-500/30 transition focus:outline-none focus:ring-2 focus:ring-indigo-400"
-        title="Install DevForge as an application"
+        title="Install DEBPTH as an application"
       >
         <Download className="w-3.5 h-3.5" />
         <span>{installing ? 'Installing...' : 'Install App'}</span>

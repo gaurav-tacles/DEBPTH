@@ -31,7 +31,7 @@ export const ProjectHubLogo: React.FC<ProjectHubLogoProps> = ({
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
           className="w-full h-full"
-          aria-label="ProjectHub Logo"
+          aria-label="DEBPTH Logo"
         >
           <defs>
             <linearGradient id="ph-grad-primary" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -75,15 +75,17 @@ export const ProjectHubLogo: React.FC<ProjectHubLogoProps> = ({
         <div className="flex flex-col min-w-0">
           <div className="flex items-center gap-1.5">
             <span className={`font-bold tracking-tight text-[#F4F8FF] ${text}`}>
-              Project<span className="text-[#8B5CF6]">Hub</span>
+              DEB<span className="text-[#8B5CF6]">PTH</span>
             </span>
             <span className="h-1.5 w-1.5 rounded-full bg-[#34D399]" title="Cluster Active" />
           </div>
-          <span className={`font-mono text-[#B4B0B0] truncate ${subtext}`}>
-            Developer Workspace
+          <span className={`font-mono text-[#8B5CF6] truncate ${subtext}`}>
+            by DevLead Labs
           </span>
         </div>
       )}
     </div>
   );
 };
+
+export { ProjectHubLogo as DebpthLogo };

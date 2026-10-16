@@ -16,16 +16,21 @@ import {
   Edit3,
   Check,
   UserPlus,
+  Mail,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { Project, ProjectRole, ProjectStatus, Priority } from '../../types';
 import { AddProjectMemberModal } from './AddProjectMemberModal';
+import { InviteMemberModal } from '../team/InviteMemberModal';
+import { SecureDeleteConfirmModal } from '../common/SecureDeleteConfirmModal';
+import { GitHubView } from '../github/GitHubView';
 
 interface ProjectDetailProps {
   projectId: string;
   onBack: () => void;
   onNavigateToTasks: () => void;
   onNavigateToDocs: () => void;
+  onNavigateToSecurity?: () => void;
 }
 
 export const ProjectDetail: React.FC<ProjectDetailProps> = ({
@@ -33,6 +38,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   onBack,
   onNavigateToTasks,
   onNavigateToDocs,
+  onNavigateToSecurity,
 }) => {
   const {
     projects,
@@ -43,13 +49,17 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     documents,
     activityLogs,
     updateProject,
+    deleteProject,
     addProjectMember,
     updateProjectMember,
     removeProjectMember,
+    createInvitation,
   } = useWorkspace();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'tasks' | 'documents' | 'activity'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'tasks' | 'documents' | 'github' | 'activity'>('overview');
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   const project = projects.find((p) => p.id === projectId);
 
@@ -145,6 +155,18 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
               {project.priority}
             </span>
           </div>
+
+          {isSuperAdmin && (
+            <button
+              type="button"
+              onClick={() => setIsDeleteModalOpen(true)}
+              className="flex items-center gap-1.5 text-xs text-[#FB7185] bg-[#FB7185]/10 border border-[#FB7185]/30 hover:bg-[#FB7185]/20 hover:border-[#FB7185]/60 px-3 py-1.5 rounded-lg transition font-medium cursor-pointer shrink-0"
+              title="Delete Project (Super Admin & MFA required)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Project</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -156,6 +178,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
             { id: 'members', label: `Members & Access (${projectMembers.length})` },
             { id: 'tasks', label: `Tasks (${projectTasks.length})` },
             { id: 'documents', label: `Documents (${projectDocs.length})` },
+            { id: 'github', label: `GitHub Repos (${project.repositories?.length || 0})` },
             { id: 'activity', label: 'Audit Activity' },
           ] as const
         ).map((tab) => (
@@ -349,6 +372,30 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                   ))}
                 </div>
               )}
+              {/* Danger Zone: Project Deletion (Super Admin only) */}
+              {isSuperAdmin && (
+                <div className="rounded-xl border border-[#FB7185]/30 bg-[#FB7185]/5 p-4 space-y-2 text-xs">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="font-semibold text-[#FB7185] flex items-center gap-1.5">
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Danger Zone: Delete Project</span>
+                      </h4>
+                      <p className="text-[11px] text-[#B4B0B0] mt-0.5 leading-relaxed">
+                        Permanently delete this project and all associated tasks, documents, milestones, member assignments, and audit logs. Super Admin authorization and Multi-Factor Authentication (TOTP) are strictly enforced.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsDeleteModalOpen(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FB7185] hover:bg-[#F43F5E] text-white text-xs font-semibold shadow-xs transition cursor-pointer shrink-0 mt-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Project</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -365,13 +412,23 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
               </p>
             </div>
             {canManageMembers && (
-              <button
-                onClick={() => setIsAddMemberOpen(true)}
-                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition shadow-sm"
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Add Member</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsInviteOpen(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:border-indigo-500/50 transition shadow-xs cursor-pointer"
+                  title="Issue a secure cryptographic single-use invitation directly to this project"
+                >
+                  <Mail className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Invite to Project</span>
+                </button>
+                <button
+                  onClick={() => setIsAddMemberOpen(true)}
+                  className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition shadow-sm cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Add Existing Member</span>
+                </button>
+              </div>
             )}
           </div>
 
@@ -605,6 +662,13 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
         </div>
       )}
 
+      {/* TAB: GITHUB & COMMITS */}
+      {activeTab === 'github' && (
+        <div className="space-y-4">
+          <GitHubView projectId={project.id} />
+        </div>
+      )}
+
       {/* TAB 5: AUDIT ACTIVITY */}
       {activeTab === 'activity' && (
         <div className="space-y-3">
@@ -637,6 +701,38 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
         onAddMember={(userId, role, permissions) =>
           addProjectMember(project.id, userId, role, permissions)
         }
+      />
+
+      {/* Modal for inviting external member directly to project */}
+      <InviteMemberModal
+        isOpen={isInviteOpen}
+        onClose={() => setIsInviteOpen(false)}
+        projects={projects}
+        isSuperAdmin={isSuperAdmin}
+        preselectedProjectId={project.id}
+        onInvite={(email, role, initialLabels, assignedProjectIds, expiresInDays, invitedProjectRole) =>
+          createInvitation(email, role, initialLabels, assignedProjectIds, expiresInDays, invitedProjectRole)
+        }
+      />
+
+      {/* Modal for secure project deletion with MFA verification */}
+      <SecureDeleteConfirmModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        itemType="Project"
+        itemName={project.name}
+        itemId={project.id}
+        cascadingNotes={[
+          `${projectTasks.length} task(s)`,
+          `${projectDocs.length} document(s)`,
+          `${projectMembers.length} member assignment(s)`,
+          'Associated project milestones and audit logs',
+        ]}
+        onConfirmDelete={async () => {
+          await deleteProject(project.id);
+          onBack();
+        }}
+        onNavigateToSecurity={onNavigateToSecurity}
       />
     </div>
   );

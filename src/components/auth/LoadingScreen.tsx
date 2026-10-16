@@ -21,10 +21,10 @@ export const LoadingScreen: React.FC<{ message?: string }> = ({
 
         {/* Title and Product Identity */}
         <h1 className="text-xl font-bold tracking-tight text-[#F4F8FF]">
-          Project Apex
+          DEBPTH
         </h1>
-        <p className="text-xs font-mono text-[#B4B0B0] mt-1 tracking-wider uppercase">
-          Private Developer Workspace
+        <p className="text-xs font-mono text-[#8B5CF6] mt-1 tracking-wider uppercase">
+          by DevLead Labs
         </p>
 
         {/* Loading Spinner & Status message */}

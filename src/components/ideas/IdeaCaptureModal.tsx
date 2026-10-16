@@ -75,7 +75,7 @@ export const IdeaCaptureModal: React.FC<IdeaCaptureModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xs p-0 sm:p-4">
-      <div className="w-full max-w-lg rounded-t-2xl sm:rounded-2xl border border-[#38302D] bg-[#191311] p-5 sm:p-6 shadow-2xl text-[#F4F8FF] max-h-[90vh] overflow-y-auto animate-in slide-in-from-bottom duration-200">
+      <div className="w-full max-w-lg rounded-t-2xl sm:rounded-2xl border border-[#38302D] bg-[#191311] p-5 sm:p-6 shadow-2xl text-[#F4F8FF] max-h-[calc(100dvh-1rem)] overflow-y-auto animate-in slide-in-from-bottom duration-200">
         {/* Header */}
         <div className="flex items-center justify-between pb-3.5 border-b border-[#38302D]">
           <div className="flex items-center gap-2.5">

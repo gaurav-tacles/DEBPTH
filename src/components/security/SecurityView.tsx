@@ -89,7 +89,7 @@ export const SecurityView: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto rounded-xl border border-[#38302D] bg-[#0F0B0A]">
-          <table className="w-full text-left text-xs">
+          <table className="w-full text-left text-xs min-w-[560px]">
             <thead className="border-b border-[#38302D] bg-[#191311] text-[10px] font-mono uppercase text-[#B4B0B0]">
               <tr>
                 <th className="p-3.5">Member</th>

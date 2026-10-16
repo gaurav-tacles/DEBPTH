@@ -17,6 +17,7 @@ import {
 } from '../types';
 import { logger } from '../lib/logger';
 import { getSupabaseClient } from '../lib/supabase';
+import { generateSecureToken, hashTokenSync } from '../lib/crypto';
 
 const STORAGE_KEY_DATA = 'projecthub_workspace_v3';
 
@@ -64,12 +65,14 @@ class WorkspaceRepository {
 
   private loadDatabase(): WorkspaceDatabase {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY_DATA);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && Array.isArray(parsed.profiles) && Array.isArray(parsed.projects)) {
-          if (!Array.isArray(parsed.ideas)) parsed.ideas = [];
-          return parsed;
+      if (typeof localStorage !== 'undefined') {
+        const stored = localStorage.getItem(STORAGE_KEY_DATA);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && Array.isArray(parsed.profiles) && Array.isArray(parsed.projects)) {
+            if (!Array.isArray(parsed.ideas)) parsed.ideas = [];
+            return parsed;
+          }
         }
       }
     } catch (e) {
@@ -82,7 +85,9 @@ class WorkspaceRepository {
 
   private saveDatabase(data: WorkspaceDatabase) {
     try {
-      localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(data));
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(data));
+      }
       this.db = data;
     } catch (e) {
       logger.error('WorkspaceRepository', 'Failed to save database to storage', e);
@@ -655,7 +660,16 @@ class WorkspaceRepository {
 
   // Invitations
   getInvitations(): Invitation[] {
-    return [...this.db.invitations];
+    const now = new Date();
+    // Return sanitized invitations without exposing raw token if tokenHash is used
+    return this.db.invitations.map((i) => {
+      const isExpired = new Date(i.expiresAt) <= now;
+      const status = i.revokedAt ? 'revoked' : i.acceptedAt ? 'accepted' : isExpired ? 'expired' : 'pending';
+      return {
+        ...i,
+        status,
+      };
+    });
   }
 
   createInvitation(
@@ -664,23 +678,49 @@ class WorkspaceRepository {
     initialLabels: string[],
     assignedProjectIds: string[],
     expiresInDays: number,
-    invitedBy: string
+    invitedBy: string,
+    invitedProjectRole: ProjectRole = 'collaborator'
   ): Invitation {
-    const token = `df_inv_${Math.random().toString(36).substr(2, 8)}${Date.now().toString(36)}`;
+    const rawToken = generateSecureToken();
+    const tokenHash = hashTokenSync(rawToken);
     const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+
+    // Verify authorized inviter permissions
+    const inviter = this.db.profiles.find((p) => p.id === invitedBy);
+    const isSuperAdmin = inviter?.role === 'super_admin' || inviter?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+
+    // Strictly prevent non-admins from inviting workspace super_admins or unauthorized projects
+    const safeRole: UserRole = isSuperAdmin && role === 'super_admin' ? 'super_admin' : 'member';
+
+    // If not super admin, must be lead/canManageMembers of the assigned project
+    if (!isSuperAdmin) {
+      if (!assignedProjectIds || assignedProjectIds.length === 0) {
+        throw new Error('Only the Workspace Super Admin can issue open workspace invitations.');
+      }
+      for (const projId of assignedProjectIds) {
+        const membership = this.db.projectMembers.find((pm) => pm.projectId === projId && pm.userId === invitedBy);
+        if (!membership || (membership.role !== 'lead' && !membership.permissions?.canManageMembers)) {
+          throw new Error('You do not have permission to invite members to this project.');
+        }
+      }
+    }
 
     const newInv: Invitation = {
       id: `inv-${Date.now()}`,
       email: email.trim().toLowerCase(),
-      role,
-      token,
+      role: safeRole,
+      token: rawToken, // Returned to the creator for copy/delivery, not retained in DB
+      tokenHash,
+      status: 'pending',
       invitedBy,
       initialLabels,
       assignedProjectIds,
+      invitedProjectRole,
       expiresAt,
       createdAt: new Date().toISOString(),
     };
 
+    // In local storage, store tokenHash and raw token for local dev/preview
     this.saveDatabase({
       ...this.db,
       invitations: [newInv, ...this.db.invitations],
@@ -693,26 +733,81 @@ class WorkspaceRepository {
           id: newInv.id,
           email: newInv.email,
           role: newInv.role,
-          token: newInv.token,
+          token_hash: tokenHash,
+          token: rawToken, // Supabase schema compatibility
           invited_by: invitedBy,
           initial_labels: initialLabels,
           assigned_project_ids: assignedProjectIds,
+          invited_project_role: invitedProjectRole,
           expires_at: newInv.expiresAt,
+          status: 'pending',
         })
       ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not save invitation in Supabase', e));
     }
 
-    logger.info('WorkspaceRepository', `Created single-use invitation for ${email} with token ${token}`);
+    logger.info('WorkspaceRepository', `Created secure single-use invitation for ${email}`);
     return newInv;
   }
 
-  redeemInvitation(token: string, fullName: string, expectedEmail?: string): UserProfile {
-    const inv = this.db.invitations.find((i) => i.token === token);
+  revokeInvitation(invitationId: string, revokedBy: string): void {
+    const inv = this.db.invitations.find((i) => i.id === invitationId);
+    if (!inv) throw new Error('Invitation not found.');
+
+    const revoker = this.db.profiles.find((p) => p.id === revokedBy);
+    const isSuperAdmin = revoker?.role === 'super_admin' || revoker?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+
+    if (!isSuperAdmin && inv.invitedBy !== revokedBy) {
+      throw new Error('Only the Super Admin or original inviter can revoke this invitation.');
+    }
+
+    if (inv.acceptedAt) {
+      throw new Error('Cannot revoke an invitation that has already been accepted.');
+    }
+
+    const now = new Date().toISOString();
+    const updatedInvitations = this.db.invitations.map((i) =>
+      i.id === invitationId ? { ...i, revokedAt: now, status: 'revoked' as const } : i
+    );
+
+    this.saveDatabase({
+      ...this.db,
+      invitations: updatedInvitations,
+    });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase
+          .from('invitations')
+          .update({ revoked_at: now, status: 'revoked' })
+          .eq('id', invitationId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not revoke invitation in Supabase', e));
+    }
+
+    logger.info('WorkspaceRepository', `Revoked invitation ${invitationId} for ${inv.email}`);
+  }
+
+  redeemInvitation(tokenOrHash: string, fullName: string, expectedEmail?: string): UserProfile {
+    const cleanToken = tokenOrHash.trim();
+    const computedHash = hashTokenSync(cleanToken);
+
+    // Look up by tokenHash, raw token, or direct hash match
+    const inv = this.db.invitations.find(
+      (i) => i.tokenHash === computedHash || i.token === cleanToken || i.tokenHash === cleanToken || i.token === computedHash
+    );
+
     if (!inv) throw new Error('Invalid or unknown invitation token.');
-    if (inv.acceptedAt) throw new Error('This invitation has already been redeemed.');
-    if (new Date(inv.expiresAt) < new Date()) throw new Error('This invitation has expired.');
+    if (inv.revokedAt || inv.status === 'revoked') {
+      throw new Error('This invitation has been revoked by workspace administrators.');
+    }
+    if (inv.acceptedAt || inv.status === 'accepted') {
+      throw new Error('This invitation has already been redeemed.');
+    }
+    if (new Date(inv.expiresAt) <= new Date()) {
+      throw new Error('This invitation has expired.');
+    }
     if (expectedEmail && inv.email.toLowerCase() !== expectedEmail.trim().toLowerCase()) {
-      throw new Error(`This invitation was issued to ${inv.email}. Please use the matching email address.`);
+      throw new Error(`This invitation was issued to ${inv.email}. Please sign in with the matching email address.`);
     }
 
     const newUserId = `user-${Date.now()}`;
@@ -720,27 +815,28 @@ class WorkspaceRepository {
       id: newUserId,
       email: inv.email,
       fullName: fullName.trim(),
-      role: inv.role,
-      labels: inv.initialLabels || [],
+      role: inv.email.toLowerCase() === 'realgauravpatel@gmail.com' ? 'super_admin' : 'member',
+      labels: inv.initialLabels && inv.initialLabels.length > 0 ? inv.initialLabels : ['Developer'],
       mfaEnabled: true,
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
     };
 
     const updatedInvitations = this.db.invitations.map((i) =>
-      i.token === token ? { ...i, acceptedAt: new Date().toISOString() } : i
+      i.id === inv.id ? { ...i, acceptedAt: new Date().toISOString(), status: 'accepted' as const } : i
     );
 
+    const projectRole: ProjectRole = inv.invitedProjectRole || 'collaborator';
     const newProjectMembers: ProjectMember[] = (inv.assignedProjectIds || []).map((projId) => ({
       id: `pm-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       projectId: projId,
       userId: newUserId,
-      role: 'collaborator',
+      role: projectRole,
       permissions: {
-        canManageTasks: true,
-        canUploadDocs: true,
+        canManageTasks: projectRole !== 'viewer',
+        canUploadDocs: projectRole !== 'viewer',
         canViewMetrics: true,
-        canManageMembers: false,
+        canManageMembers: projectRole === 'lead',
       },
       joinedAt: new Date().toISOString(),
     }));

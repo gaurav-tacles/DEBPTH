@@ -108,7 +108,7 @@ export const SettingsView: React.FC = () => {
             </div>
 
             <p className="text-xs text-[#B4B0B0] leading-relaxed">
-              Connect your free Supabase project to persist data in cloud PostgreSQL with Row-Level Security (RLS) and Supabase Storage. When credentials are not yet entered, Project Apex runs in offline-first mode with instant responsive caching.
+              Connect your free Supabase project to persist data in cloud PostgreSQL with Row-Level Security (RLS) and Supabase Storage. When credentials are not yet entered, DEBPTH by DevLead Labs runs in offline-first mode with instant responsive caching.
             </p>
 
             <div className="space-y-3 text-xs">

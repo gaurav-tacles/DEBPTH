@@ -37,13 +37,23 @@ interface ContributorItem {
   avatar_url: string;
 }
 
-export const GitHubView: React.FC = () => {
+interface GitHubViewProps {
+  projectId?: string;
+}
+
+export const GitHubView: React.FC<GitHubViewProps> = ({ projectId }) => {
   const { projects, activeProjectId } = useWorkspace();
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(activeProjectId || projects[0]?.id || '');
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(
+    projectId || activeProjectId || projects[0]?.id || ''
+  );
+
+  useEffect(() => {
+    if (projectId) setSelectedProjectId(projectId);
+  }, [projectId]);
 
   const project = projects.find((p) => p.id === selectedProjectId);
   const repositories = project?.repositories || [];
-  const [selectedRepo, setSelectedRepo] = useState<string>(repositories[0]?.name || 'facebook/react');
+  const [selectedRepo, setSelectedRepo] = useState<string>(repositories[0]?.name || '');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,10 +64,8 @@ export const GitHubView: React.FC = () => {
 
   // Sync selected repo when project changes
   useEffect(() => {
-    if (repositories.length > 0) {
-      setSelectedRepo(repositories[0].name);
-    }
-  }, [selectedProjectId]);
+    setSelectedRepo(repositories[0]?.name || '');
+  }, [selectedProjectId, repositories]);
 
   // Fetch real GitHub repository metadata
   const fetchRepoData = async () => {
@@ -221,9 +229,19 @@ export const GitHubView: React.FC = () => {
         </div>
       )}
 
-      {/* Repo Stats Row */}
-      {repoSummary && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {!selectedRepo ? (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-8 text-center text-slate-400 space-y-2">
+          <GitBranch className="w-8 h-8 text-slate-600 mx-auto" />
+          <h3 className="text-sm font-semibold text-slate-300">No Repository Connected</h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            This project has no GitHub repository mapped yet. Connect an owner/repo repository mapping when editing this project to inspect real commit streams and metrics.
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Repo Stats Row */}
+          {repoSummary && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-xs">
             <span className="text-slate-400 flex items-center gap-1">
               <Star className="w-3.5 h-3.5 text-amber-400" /> Stars
@@ -349,6 +367,8 @@ export const GitHubView: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+    </>
+  )}
+</div>
   );
 };

@@ -122,7 +122,7 @@ export const ProfileView: React.FC = () => {
     try {
       const { data, error: enrollErr } = await supabase.auth.mfa.enroll({
         factorType: 'totp',
-        issuer: 'ProjectHub Workspace',
+        issuer: 'DEBPTH Workspace',
       });
 
       if (enrollErr) {

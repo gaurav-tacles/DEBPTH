@@ -4,7 +4,7 @@ import {
   LogOut,
   LayoutDashboard,
   FolderKanban,
-  Sparkles,
+  CheckSquare,
   Users,
   Bell,
   ChevronRight,
@@ -52,7 +52,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   const bottomItems = [
     { id: 'overview' as NavView, label: 'Overview', icon: LayoutDashboard },
     { id: 'projects' as NavView, label: 'Projects', icon: FolderKanban, badge: projects.length },
-    { id: 'built-by-us' as NavView, label: 'Built by Us', icon: Sparkles },
+    { id: 'tasks' as NavView, label: 'Tasks', icon: CheckSquare },
     { id: 'team' as NavView, label: 'Team', icon: Users },
     { id: 'announcements' as NavView, label: 'Alerts', icon: Bell, badge: unreadNotifs },
   ];
@@ -72,8 +72,8 @@ export const MobileNav: React.FC<MobileNavProps> = ({
                     ▲
                   </div>
                   <div>
-                    <span className="font-semibold text-xs tracking-tight text-[#F4F8FF]">ProjectHub</span>
-                    <div className="text-[10px] text-[#B4B0B0] font-mono">Mobile Workspace</div>
+                    <span className="font-semibold text-xs tracking-tight text-[#F4F8FF]">DEBPTH</span>
+                    <div className="text-[10px] text-[#8B5CF6] font-mono">by DevLead Labs</div>
                   </div>
                 </div>
                 <button
@@ -114,11 +114,6 @@ export const MobileNav: React.FC<MobileNavProps> = ({
                           }`}
                         />
                         <span className="truncate">{item.label}</span>
-                        {item.id === 'built-by-us' && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono uppercase bg-[#8B5CF6]/20 text-[#8B5CF6] border border-[#8B5CF6]/30">
-                            New
-                          </span>
-                        )}
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">

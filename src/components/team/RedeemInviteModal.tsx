@@ -56,7 +56,8 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
             <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-[#34D399]/20 text-[#34D399]">
               <UserCheck className="w-6 h-6" />
             </div>
-            <h4 className="text-sm font-semibold text-[#34D399]">Welcome to Project Apex!</h4>
+            <h4 className="text-sm font-semibold text-[#34D399]">Welcome to DEBPTH!</h4>
+            <p className="text-xs text-[#8B5CF6] font-mono">by DevLead Labs</p>
             <p className="text-xs text-[#B4B0B0]">
               Invitation successfully accepted. You are now logged in.
             </p>

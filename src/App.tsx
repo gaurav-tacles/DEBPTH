@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext';
 import { AppHeader } from './components/layout/AppHeader';
-import { AppSidebar, NavView } from './components/layout/AppSidebar';
+import { AppSidebar } from './components/layout/AppSidebar';
+import { NavView } from './config/navigation';
 import { MobileNav } from './components/layout/MobileNav';
 import { OfflineIndicator } from './components/common/OfflineIndicator';
 import { NotificationDrawer } from './components/notifications/NotificationDrawer';
@@ -13,12 +14,13 @@ import { MilestonesView } from './components/milestones/MilestonesView';
 import { DocumentsView } from './components/documents/DocumentsView';
 import { SuggestionsView } from './components/suggestions/SuggestionsView';
 import { TeamDirectory } from './components/team/TeamDirectory';
-import { BuiltByUsView } from './components/portfolio/BuiltByUsView';
 import { IdeasView } from './components/ideas/IdeasView';
 import { IdeaCaptureModal } from './components/ideas/IdeaCaptureModal';
 import { AnnouncementsView } from './components/announcements/AnnouncementsView';
 import { SecurityView } from './components/security/SecurityView';
 import { SettingsView } from './components/settings/SettingsView';
+import { AboutCreatorView } from './components/about/AboutCreatorView';
+import { ProfileView } from './components/profile/ProfileView';
 import { AuthScreen } from './components/auth/AuthScreen';
 import { LoadingScreen } from './components/auth/LoadingScreen';
 import { Brain } from 'lucide-react';
@@ -44,7 +46,7 @@ const WorkspaceShell: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0F0B0A] text-[#F4F8FF] flex flex-col font-['Geist',sans-serif] selection:bg-[#8B5CF6] selection:text-white">
+    <div className="h-screen bg-[#0F0B0A] text-[#F4F8FF] flex flex-col font-['Geist',sans-serif] selection:bg-[#8B5CF6] selection:text-white overflow-hidden">
       {/* Top Application Header */}
       <AppHeader
         currentView={currentView}
@@ -53,11 +55,12 @@ const WorkspaceShell: React.FC = () => {
         onOpenNotifications={() => setIsNotificationsOpen(true)}
       />
 
-      {/* Main Container with Sidebar + Main View */}
-      <div className="flex flex-1 w-full min-h-0">
+      {/* Main View Area with Persistent Desktop Sidebar */}
+      <div className="flex flex-1 w-full min-h-0 overflow-hidden">
+        {/* Desktop Sidebar: Visible at 768px, 1024px, 1280px, 1440px */}
         <AppSidebar currentView={currentView} onNavigate={handleNavigate} />
 
-        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 pb-20 md:pb-8 overflow-y-auto">
+        <main className="flex-1 min-w-0 h-full p-3 sm:p-6 lg:p-8 pb-24 md:pb-8 overflow-y-auto">
           {currentView === 'overview' && (
             <DashboardView
               onNavigateToProjects={() => setCurrentView('projects')}
@@ -81,10 +84,11 @@ const WorkspaceShell: React.FC = () => {
               onBack={() => setCurrentView('projects')}
               onNavigateToTasks={() => setCurrentView('tasks')}
               onNavigateToDocs={() => setCurrentView('documents')}
+              onNavigateToSecurity={() => setCurrentView('profile')}
             />
           )}
 
-          {currentView === 'built-by-us' && <BuiltByUsView />}
+          {currentView === 'about-creator' && <AboutCreatorView />}
 
           {currentView === 'team' && <TeamDirectory />}
 
@@ -101,6 +105,8 @@ const WorkspaceShell: React.FC = () => {
           {currentView === 'security' && <SecurityView />}
 
           {currentView === 'settings' && <SettingsView />}
+
+          {currentView === 'profile' && <ProfileView />}
         </main>
       </div>
 

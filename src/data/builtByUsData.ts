@@ -18,8 +18,8 @@ export interface ShowcaseProject {
 export const BUILT_BY_US_PROJECTS: ShowcaseProject[] = [
   {
     id: 'projecthub',
-    title: 'ProjectHub',
-    subtitle: 'Private Developer Workspace & Team Hub',
+    title: 'DEBPTH',
+    subtitle: 'by DevLead Labs — Private Developer Workspace & Team Hub',
     description:
       'A private engineering workspace engineered for software teams and project leads. Combines unified email/password authentication, database-enforced Super Admin security, task management, encrypted document repository, repository tracking, and a personal ideas capture system.',
     category: 'Developer Platform',
@@ -96,7 +96,7 @@ export const BUILT_BY_US_PROJECTS: ShowcaseProject[] = [
     technologies: ['Web Architecture', 'Full-Stack Systems', 'Cloud Native', 'Design Systems'],
     featured: true,
     highlights: [
-      'Architectural foundation for ProjectHub, Lunexa, and Deora',
+      'Architectural foundation for DEBPTH, Lunexa, and Deora',
       'Focus on high-velocity developer tools and privacy-first SaaS',
       'Tailored design systems built with precision typography and micro-interactions',
     ],

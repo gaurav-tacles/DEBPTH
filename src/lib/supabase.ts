@@ -10,11 +10,11 @@ const STORAGE_KEY_URL = 'projecthub_supabase_url';
 const STORAGE_KEY_KEY = 'projecthub_supabase_key';
 
 export function getStoredSupabaseConfig(): SupabaseConfig {
-  const envUrl = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+  const envUrl = (typeof import.meta !== 'undefined' && import.meta.env ? (import.meta.env.VITE_SUPABASE_URL as string) : '') || '';
+  const envKey = (typeof import.meta !== 'undefined' && import.meta.env ? (import.meta.env.VITE_SUPABASE_ANON_KEY as string) : '') || '';
 
-  const localUrl = localStorage.getItem(STORAGE_KEY_URL) || '';
-  const localKey = localStorage.getItem(STORAGE_KEY_KEY) || '';
+  const localUrl = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_URL) || '' : '';
+  const localKey = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_KEY) || '' : '';
 
   return {
     url: localUrl || envUrl,

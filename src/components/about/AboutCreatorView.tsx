@@ -33,7 +33,7 @@ export const AboutCreatorView: React.FC = () => {
           </h1>
 
           <p className="text-sm sm:text-base text-[#B4B0B0] leading-relaxed">
-            ProjectHub was designed and engineered by <strong className="text-white font-semibold">DevLead Labs</strong> under the technical direction of <strong className="text-white font-semibold">Patel Gaurav</strong>. It represents a focused commitment to building private, reliable developer workspaces where engineering teams retain sovereign control over their roadmaps, data, and credentials.
+            DEBPTH was designed and engineered by <strong className="text-white font-semibold">DevLead Labs</strong> under the technical direction of <strong className="text-white font-semibold">Patel Gaurav</strong>. It represents a focused commitment to building private, reliable developer workspaces where engineering teams retain sovereign control over their roadmaps, data, and credentials.
           </p>
 
           <div className="pt-2 flex flex-wrap items-center gap-4 text-xs font-mono text-[#B4B0B0]">
@@ -127,7 +127,7 @@ export const AboutCreatorView: React.FC = () => {
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#8B5CF6]/40 bg-[#8B5CF6]/15 text-[#8B5CF6] hover:bg-[#8B5CF6]/25 transition cursor-pointer font-medium"
               >
                 <Code2 className="w-3.5 h-3.5" />
-                <span>ProjectHub Repository</span>
+                <span>DEBPTH Repository</span>
                 <ArrowUpRight className="w-3 h-3" />
               </a>
             </div>
@@ -153,14 +153,14 @@ export const AboutCreatorView: React.FC = () => {
           </div>
         </div>
 
-        {/* Why ProjectHub Exists */}
+        {/* Why DEBPTH Exists */}
         <div className="rounded-2xl border border-[#38302D] bg-[#191311] p-6 space-y-3">
           <div className="flex items-center gap-2.5 text-[#34D399]">
             <Shield className="w-5 h-5" />
-            <h3 className="text-base font-semibold text-[#F4F8FF]">Why ProjectHub Exists</h3>
+            <h3 className="text-base font-semibold text-[#F4F8FF]">Why DEBPTH Exists</h3>
           </div>
           <p className="text-xs text-[#B4B0B0] leading-relaxed">
-            Modern development teams frequently juggle fragmented tools with opaque permissions. ProjectHub unifies project roadmaps, private documents, task tracking, and personal idea capture into one single-tenant workspace anchored by PostgreSQL Row-Level Security.
+            Modern development teams frequently juggle fragmented tools with opaque permissions. DEBPTH unifies project roadmaps, private documents, task tracking, and personal idea capture into one single-tenant workspace anchored by PostgreSQL Row-Level Security.
           </p>
           <div className="pt-2 text-xs font-mono text-[#34D399] flex items-center gap-1.5">
             <span>Zero Telemetry Clutter</span>
@@ -174,7 +174,7 @@ export const AboutCreatorView: React.FC = () => {
       <section className="rounded-2xl border border-[#38302D] bg-[#0F0B0A] p-6 text-center space-y-3">
         <div className="flex items-center justify-center gap-2 text-xs font-mono text-[#B4B0B0]">
           <ProjectHubLogo size="sm" />
-          <span>DevForge Architecture · DevLead Labs · Crafted by Patel Gaurav</span>
+          <span>DEBPTH by DevLead Labs · Crafted by Patel Gaurav</span>
         </div>
         <p className="text-xs text-[#B4B0B0]/70 max-w-xl mx-auto">
           Every line of code is structured for direct verification, clear auditability, and long-term maintainability.

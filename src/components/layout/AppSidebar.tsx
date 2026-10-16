@@ -4,9 +4,11 @@ import {
   Settings,
   LogOut,
   Sparkles,
+  User,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { NavView, NAVIGATION_ITEMS } from '../../config/navigation';
+import { DebpthLogo } from '../common/ProjectHubLogo';
 
 export type { NavView };
 
@@ -42,20 +44,22 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate 
   return (
     <aside
       aria-label="Desktop Navigation Sidebar"
-      className="hidden md:flex flex-col w-64 shrink-0 border-r border-[#38302D] bg-[#0F0B0A] h-[calc(100vh-3.5rem)] sticky top-14 justify-between select-none p-3.5 z-20 overflow-y-auto"
+      className="hidden md:flex flex-col w-64 shrink-0 border-r border-[#38302D] bg-[#0F0B0A] h-full justify-between select-none p-3.5 z-20 overflow-y-auto"
     >
       <div className="space-y-5">
         {/* Workspace Brand Identity */}
-        <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-[#38302D] bg-[#191311]/90 shadow-xs">
-          <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-[#8B5CF6] to-[#3B82F6] text-white font-mono font-bold text-xs shadow-xs">
-            <span>▲</span>
-          </div>
+        <div
+          onClick={() => onNavigate('overview')}
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-[#38302D] bg-[#191311]/90 shadow-xs cursor-pointer hover:border-[#8B5CF6]/50 transition group"
+          title="DEBPTH by DevLead Labs"
+        >
+          <DebpthLogo size="sm" showWordmark={false} />
           <div className="flex flex-col min-w-0">
             <div className="flex items-center gap-1.5">
-              <span className="font-semibold text-xs tracking-tight text-[#F4F8FF]">ProjectHub</span>
+              <span className="font-semibold text-xs tracking-tight text-[#F4F8FF] group-hover:text-[#8B5CF6] transition">DEBPTH</span>
               <span className="h-1.5 w-1.5 rounded-full bg-[#34D399]" title="Cluster Active" />
             </div>
-            <span className="text-[10px] font-mono text-[#B4B0B0] truncate">Engineering Workspace</span>
+            <span className="text-[10px] font-mono text-[#8B5CF6] truncate">by DevLead Labs</span>
           </div>
         </div>
 
@@ -99,11 +103,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate 
                           }`}
                         />
                         <span className="truncate">{item.label}</span>
-                        {item.id === 'built-by-us' && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono uppercase bg-[#8B5CF6]/20 text-[#8B5CF6] border border-[#8B5CF6]/30">
-                            New
-                          </span>
-                        )}
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -132,7 +131,12 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate 
       {/* Current User Profile Area at Bottom */}
       <div className="pt-3 border-t border-[#38302D] mt-4">
         <div className="flex items-center justify-between p-2 rounded-xl bg-[#191311] border border-[#38302D]/80 hover:border-[#38302D] transition">
-          <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            onClick={() => onNavigate('profile')}
+            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group flex-1 p-1 -m-1 rounded-lg hover:bg-[#211B19] transition"
+            title="View Profile & Security"
+          >
             <div className="relative shrink-0">
               <img
                 src={
@@ -140,22 +144,30 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentView, onNavigate 
                   'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'
                 }
                 alt={currentUser?.fullName || 'User'}
-                className="w-7 h-7 rounded-lg object-cover ring-1 ring-[#38302D]"
+                className="w-7 h-7 rounded-lg object-cover ring-1 ring-[#38302D] group-hover:ring-[#8B5CF6]/50 transition"
               />
               <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-[#34D399] ring-2 ring-[#191311]" />
             </div>
 
             <div className="flex flex-col min-w-0">
-              <span className="text-xs font-semibold text-[#F4F8FF] truncate leading-tight">
+              <span className="text-xs font-semibold text-[#F4F8FF] group-hover:text-[#8B5CF6] transition truncate leading-tight">
                 {currentUser?.fullName || 'Super Admin'}
               </span>
               <span className="text-[10px] font-mono text-[#B4B0B0] truncate">
                 {isSuperAdmin ? 'SUPER ADMIN' : 'MEMBER'}
               </span>
             </div>
-          </div>
+          </button>
 
           <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => onNavigate('profile')}
+              className="p-1 rounded-lg text-[#B4B0B0] hover:text-[#8B5CF6] hover:bg-[#211B19] transition cursor-pointer"
+              title="My Profile & MFA Security"
+              aria-label="Profile"
+            >
+              <User className="w-3.5 h-3.5" />
+            </button>
             <button
               onClick={() => onNavigate('settings')}
               className="p-1 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition cursor-pointer"

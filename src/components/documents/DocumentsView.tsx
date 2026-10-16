@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { ProjectDocument } from '../../types';
-import { getSupabaseClient } from '../../lib/supabase';
+import { storeLocalFile, uploadToStorage, downloadDocumentFile } from '../../lib/fileStorage';
 
 export const DocumentsView: React.FC = () => {
   const {
@@ -37,32 +37,77 @@ export const DocumentsView: React.FC = () => {
   const [viewGrantModal, setViewGrantModal] = useState<string | null>(null);
 
   // Upload state
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [docTitle, setDocTitle] = useState('');
   const [fileName, setFileName] = useState('');
   const [isRestricted, setIsRestricted] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const projectDocs = documents.filter((d) => d.projectId === selectedProjectId);
   const currentProject = projects.find((p) => p.id === selectedProjectId);
 
-  const handleUploadSubmit = (e: React.FormEvent) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setFileName(file.name);
+      if (!docTitle.trim()) {
+        const titleFromFileName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+        setDocTitle(titleFromFileName.charAt(0).toUpperCase() + titleFromFileName.slice(1));
+      }
+      setUploadError(null);
+    }
+  };
+
+  const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!docTitle.trim() || !fileName.trim()) return;
+    if (!docTitle.trim()) {
+      setUploadError('Document title is required.');
+      return;
+    }
+    if (!selectedFile && !fileName.trim()) {
+      setUploadError('Please select a file to upload.');
+      return;
+    }
 
-    createDocument({
-      projectId: selectedProjectId,
-      title: docTitle.trim(),
-      fileName: fileName.trim(),
-      fileSize: Math.floor(Math.random() * 4000000) + 500000,
-      mimeType: fileName.endsWith('.json') ? 'application/json' : 'application/pdf',
-      storagePath: `projects/${selectedProjectId}/${isRestricted ? 'restricted' : 'docs'}/${fileName.trim()}`,
-      isRestricted,
-      uploadedBy: currentUser?.id || '',
-    });
+    setIsUploading(true);
+    setUploadError(null);
 
-    setDocTitle('');
-    setFileName('');
-    setIsRestricted(false);
-    setIsUploadModalOpen(false);
+    try {
+      const finalFileName = selectedFile ? selectedFile.name : fileName.trim();
+      const finalFileSize = selectedFile ? selectedFile.size : 1024;
+      const finalMimeType = selectedFile ? (selectedFile.type || 'application/octet-stream') : (finalFileName.endsWith('.json') ? 'application/json' : 'application/pdf');
+      const storagePath = `projects/${selectedProjectId}/${isRestricted ? 'restricted' : 'docs'}/${finalFileName}`;
+
+      const newDoc = createDocument({
+        projectId: selectedProjectId,
+        title: docTitle.trim(),
+        fileName: finalFileName,
+        fileSize: finalFileSize,
+        mimeType: finalMimeType,
+        storagePath,
+        isRestricted,
+        uploadedBy: currentUser?.id || '',
+      });
+
+      if (selectedFile) {
+        // Store in IndexedDB for 100% offline-ready authentic binary download
+        await storeLocalFile(newDoc.id, selectedFile);
+        // Also upload to remote Supabase Storage if configured
+        await uploadToStorage(storagePath, selectedFile);
+      }
+
+      setSelectedFile(null);
+      setDocTitle('');
+      setFileName('');
+      setIsRestricted(false);
+      setIsUploadModalOpen(false);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleRequestSubmit = (e: React.FormEvent) => {
@@ -77,39 +122,20 @@ export const DocumentsView: React.FC = () => {
   const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
 
   const handleDownloadDocument = async (doc: ProjectDocument) => {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.storage
-          .from('project-documents')
-          .createSignedUrl(doc.storagePath, 60);
-
-        if (error) {
-          setDownloadNotice(`Storage Policy Access Denied: ${error.message}`);
-          setTimeout(() => setDownloadNotice(null), 5000);
-          return;
-        }
-
-        if (data?.signedUrl) {
-          const a = document.createElement('a');
-          a.href = data.signedUrl;
-          a.download = doc.fileName;
-          a.target = '_blank';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          return;
-        }
-      } catch (err: unknown) {
-        setDownloadNotice(err instanceof Error ? err.message : 'Storage download error');
+    setDownloadNotice(`Retrieving ${doc.fileName}...`);
+    try {
+      const res = await downloadDocumentFile(doc.id, doc.storagePath, doc.fileName, doc.mimeType);
+      if (res.success) {
+        setDownloadNotice(`Downloaded ${doc.fileName} successfully.`);
+        setTimeout(() => setDownloadNotice(null), 3000);
+      } else {
+        setDownloadNotice(res.message || `Download unavailable for ${doc.fileName}`);
         setTimeout(() => setDownloadNotice(null), 5000);
-        return;
       }
+    } catch (err) {
+      setDownloadNotice(err instanceof Error ? err.message : 'Download failed');
+      setTimeout(() => setDownloadNotice(null), 5000);
     }
-
-    // Local / Dev verified download simulation
-    setDownloadNotice(`Verified authorization for ${doc.fileName} (${(doc.fileSize / 1024 / 1024).toFixed(2)} MB). Download simulated.`);
-    setTimeout(() => setDownloadNotice(null), 4000);
   };
 
   return (
@@ -355,6 +381,47 @@ export const DocumentsView: React.FC = () => {
             </div>
 
             <form onSubmit={handleUploadSubmit} className="mt-4 space-y-4 text-xs">
+              {uploadError && (
+                <div className="rounded-lg border border-[#FB7185]/40 bg-[#FB7185]/10 p-2.5 text-xs text-[#FB7185]">
+                  {uploadError}
+                </div>
+              )}
+
+              {/* Real File Input Area */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium text-slate-300">Select Document File *</label>
+                <div className="relative border-2 border-dashed border-slate-700 hover:border-[#8B5CF6]/50 rounded-xl p-4 bg-slate-950 transition text-center cursor-pointer group">
+                  <input
+                    type="file"
+                    onChange={handleFileChange}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  {selectedFile ? (
+                    <div className="flex items-center justify-center gap-3">
+                      <FileCheck className="w-6 h-6 text-[#34D399] shrink-0" />
+                      <div className="text-left min-w-0">
+                        <div className="font-semibold text-white truncate max-w-[240px] text-xs">
+                          {selectedFile.name}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {(selectedFile.size / 1024).toFixed(1)} KB · {selectedFile.type || 'binary/raw'}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <Upload className="w-6 h-6 text-[#8B5CF6] mx-auto transition-transform group-hover:-translate-y-0.5" />
+                      <div className="text-xs text-slate-300 font-medium">
+                        Click or drag a file to upload
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        PDF, JSON, YAML, Markdown, text, archives (up to 50MB)
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] font-medium text-slate-300">Document Title *</label>
                 <input
@@ -363,19 +430,7 @@ export const DocumentsView: React.FC = () => {
                   placeholder="e.g. Threat Model and Pen-Test v2"
                   value={docTitle}
                   onChange={(e) => setDocTitle(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-300">File Name *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. threat-model-v2.pdf"
-                  value={fileName}
-                  onChange={(e) => setFileName(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none font-mono"
+                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none focus:border-[#8B5CF6]"
                 />
               </div>
 
@@ -386,7 +441,7 @@ export const DocumentsView: React.FC = () => {
                       type="checkbox"
                       checked={isRestricted}
                       onChange={(e) => setIsRestricted(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-0"
+                      className="rounded border-slate-700 bg-slate-950 text-[#8B5CF6] focus:ring-0"
                     />
                     <span className="font-semibold text-slate-200">
                       Mark as Restricted Document
@@ -402,15 +457,18 @@ export const DocumentsView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsUploadModalOpen(false)}
+                  disabled={isUploading}
                   className="rounded px-3 py-1.5 text-xs text-slate-400 hover:text-white"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="rounded bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                  disabled={isUploading || (!selectedFile && !docTitle)}
+                  className="rounded bg-[#8B5CF6] hover:bg-[#7C3AED] disabled:opacity-50 px-4 py-2 text-xs font-semibold text-white transition flex items-center gap-1.5"
                 >
-                  Upload & Secure
+                  {isUploading && <Clock className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isUploading ? 'Securing & Storing...' : 'Upload & Secure'}</span>
                 </button>
               </div>
             </form>

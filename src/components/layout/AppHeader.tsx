@@ -4,9 +4,14 @@ import {
   Menu,
   ChevronDown,
   LogOut,
+  User,
+  Heart,
+  Shield,
+  Settings,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { PWAInstallButton } from '../common/PWAInstallButton';
+import { DebpthLogo } from '../common/ProjectHubLogo';
 import { NavView, getBreadcrumbTitle } from '../../config/navigation';
 
 interface AppHeaderProps {
@@ -35,9 +40,9 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-[#38302D] bg-[#0F0B0A]/95 px-4 backdrop-blur-md">
-      {/* Left: Mobile Toggle, Workspace Selector, Breadcrumb */}
-      <div className="flex items-center gap-3 min-w-0">
+    <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-[#38302D] bg-[#0F0B0A]/95 px-3 sm:px-4 lg:px-6 backdrop-blur-md">
+      {/* Left: Mobile Toggle, Brand, Workspace Selector, Breadcrumb */}
+      <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
         <button
           onClick={onToggleMobileNav}
           className="rounded-lg p-2 text-[#B4B0B0] hover:bg-[#191311] hover:text-[#F4F8FF] md:hidden cursor-pointer shrink-0"
@@ -46,14 +51,33 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           <Menu className="w-5 h-5" />
         </button>
 
+        {/* Brand Logo & Name */}
+        <div
+          onClick={() => onNavigate && onNavigate('overview')}
+          className="flex items-center gap-2 cursor-pointer select-none shrink-0 group"
+          title="DEBPTH by DevLead Labs"
+        >
+          <DebpthLogo size="sm" showWordmark={false} />
+          <div className="hidden xs:flex flex-col">
+            <span className="font-bold text-xs sm:text-sm tracking-tight text-[#F4F8FF] group-hover:text-[#8B5CF6] transition-colors leading-none">
+              DEBPTH
+            </span>
+            <span className="text-[9px] font-mono text-[#8B5CF6] leading-none mt-0.5">
+              by DevLead Labs
+            </span>
+          </div>
+        </div>
+
+        <span className="text-[#38302D] shrink-0">/</span>
+
         {/* Workspace Selector */}
         <div className="relative shrink-0">
           <button
             onClick={() => setShowWorkspaceMenu(!showWorkspaceMenu)}
-            className="flex items-center gap-2 rounded-xl border border-[#38302D] bg-[#191311] px-2.5 py-1 text-xs font-medium text-[#F4F8FF] hover:border-[#8B5CF6]/50 transition cursor-pointer"
+            className="flex items-center gap-1.5 sm:gap-2 rounded-xl border border-[#38302D] bg-[#191311] px-2 sm:px-2.5 py-1 text-xs font-medium text-[#F4F8FF] hover:border-[#8B5CF6]/50 transition cursor-pointer"
           >
             <span className="flex h-2 w-2 rounded-full bg-[#8B5CF6]" />
-            <span className="font-semibold tracking-tight">ProjectHub</span>
+            <span className="font-semibold tracking-tight text-xs">DEBPTH Workspace</span>
             <ChevronDown className="w-3.5 h-3.5 text-[#B4B0B0]" />
           </button>
 
@@ -67,26 +91,28 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
               </div>
               <div className="p-2.5 rounded-lg bg-[#211B19] text-xs text-[#F4F8FF] border border-[#38302D]/60 mt-1 space-y-1">
                 <div className="font-semibold flex items-center justify-between">
-                  <span>ProjectHub Workspace</span>
+                  <span>DEBPTH Workspace</span>
                   <span className="text-[9px] font-mono bg-[#34D399]/20 text-[#34D399] px-1 rounded">Active</span>
                 </div>
-                <div className="text-[11px] text-[#B4B0B0]">Single Super Admin · Verified TLS & RLS</div>
+                <div className="text-[11px] text-[#8B5CF6]">by DevLead Labs</div>
+                <div className="text-[10px] text-[#B4B0B0]">Single Super Admin · Verified TLS & RLS</div>
               </div>
             </div>
           )}
         </div>
 
-        <span className="text-[#38302D] hidden sm:inline">/</span>
+        <span className="text-[#38302D] hidden lg:inline shrink-0">/</span>
 
         {/* Breadcrumb */}
-        <div className="flex items-center gap-1.5 text-xs min-w-0">
-          <span className="text-[#B4B0B0] hidden sm:inline">Workspace</span>
-          <span className="text-[#38302D] hidden sm:inline">/</span>
+        <div className="hidden lg:flex items-center gap-1.5 text-xs min-w-0">
+          <span className="text-[#B4B0B0]">Workspace</span>
+          <span className="text-[#38302D]">/</span>
           <span className="font-semibold text-[#F4F8FF] truncate">
             {getBreadcrumbTitle(currentView)}
           </span>
         </div>
       </div>
+
 
       {/* Right Controls: PWA Install, Notification Bell, Profile Menu */}
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -160,24 +186,46 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
               </div>
 
               {onNavigate && (
-                <div className="py-1">
+                <div className="py-1 space-y-0.5">
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      onNavigate('profile');
+                    }}
+                    className="w-full flex items-center gap-2 text-left px-2.5 py-1.5 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition cursor-pointer"
+                  >
+                    <User className="w-3.5 h-3.5 text-[#8B5CF6]" />
+                    <span>My Profile & MFA Security</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      onNavigate('about-creator');
+                    }}
+                    className="w-full flex items-center gap-2 text-left px-2.5 py-1.5 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition cursor-pointer"
+                  >
+                    <Heart className="w-3.5 h-3.5 text-rose-400" />
+                    <span>About the Creator</span>
+                  </button>
                   <button
                     onClick={() => {
                       setShowUserMenu(false);
                       onNavigate('settings');
                     }}
-                    className="w-full text-left px-2 py-1.5 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition"
+                    className="w-full flex items-center gap-2 text-left px-2.5 py-1.5 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition cursor-pointer"
                   >
-                    Account & Database Settings
+                    <Settings className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Account & Database Settings</span>
                   </button>
                   <button
                     onClick={() => {
                       setShowUserMenu(false);
                       onNavigate('security');
                     }}
-                    className="w-full text-left px-2 py-1.5 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition"
+                    className="w-full flex items-center gap-2 text-left px-2.5 py-1.5 rounded-lg text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition cursor-pointer"
                   >
-                    Access & Security Logs
+                    <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Access & Security Logs</span>
                   </button>
                 </div>
               )}

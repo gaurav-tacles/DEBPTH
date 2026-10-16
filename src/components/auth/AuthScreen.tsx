@@ -9,7 +9,6 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  Database,
   RefreshCw,
   ArrowLeft,
   Info,
@@ -33,7 +32,7 @@ export const AuthScreen: React.FC = () => {
     clearPasswordRecovery,
   } = useWorkspace();
 
-  const [mode, setMode] = useState<'signin' | 'invite' | 'forgot' | 'reset-password' | 'config'>(() => {
+  const [mode, setMode] = useState<'signin' | 'invite' | 'forgot' | 'reset-password'>(() => {
     return isPasswordRecovery ? 'reset-password' : 'signin';
   });
 
@@ -57,6 +56,28 @@ export const AuthScreen: React.FC = () => {
 
   const hasConfiguredSupabase = isSupabaseConfigured();
 
+  // Auto-detect invite token from URL hash (e.g. #invite=ph_inv_...) or query parameter (?invite=...)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash;
+      const search = window.location.search;
+      let tokenFromUrl = '';
+
+      if (hash.includes('invite=')) {
+        const match = hash.match(/invite=([^&]+)/);
+        if (match && match[1]) tokenFromUrl = decodeURIComponent(match[1]);
+      } else if (search.includes('invite=')) {
+        const params = new URLSearchParams(search);
+        tokenFromUrl = params.get('invite') || '';
+      }
+
+      if (tokenFromUrl) {
+        setInviteToken(tokenFromUrl);
+        setMode('invite');
+      }
+    }
+  }, []);
+
   // Switch to reset-password mode if password recovery hash/event is detected
   useEffect(() => {
     if (isPasswordRecovery) {
@@ -75,7 +96,7 @@ export const AuthScreen: React.FC = () => {
 
     if (!hasConfiguredSupabase) {
       setError(
-        'Supabase authentication is not configured yet. Please enter your project URL and Anon key in the Database Config panel (top right) or configure .env.'
+        'Supabase authentication is not configured yet. Please configure your Supabase URL and Anon key in your environment variables (.env).'
       );
       return;
     }
@@ -237,34 +258,13 @@ export const AuthScreen: React.FC = () => {
           </div>
           <div>
             <div className="font-bold text-sm tracking-tight text-[#F4F8FF] flex items-center gap-2">
-              <span>ProjectHub</span>
+              <span>DEBPTH</span>
               <span className="font-mono text-[9px] uppercase font-semibold text-[#8B5CF6] bg-[#8B5CF6]/15 border border-[#8B5CF6]/30 px-1.5 py-0.5 rounded">
                 Unified Portal
               </span>
             </div>
-            <p className="text-[11px] text-[#B4B0B0] font-mono">Single Entry Authentication</p>
+            <p className="text-[11px] text-[#8B5CF6] font-mono">by DevLead Labs</p>
           </div>
-        </div>
-
-        {/* Database Status Button */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              setMode(mode === 'config' ? 'signin' : 'config');
-              setError(null);
-            }}
-            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-mono transition cursor-pointer ${
-              hasConfiguredSupabase
-                ? 'border-[#34D399]/40 bg-[#34D399]/10 text-[#34D399] hover:bg-[#34D399]/20'
-                : 'border-[#FB7185]/40 bg-[#FB7185]/10 text-[#FB7185] hover:border-[#FB7185]/60 hover:text-white'
-            }`}
-            title="Configure or test Supabase connection"
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">
-              {hasConfiguredSupabase ? 'Supabase Connected' : 'Supabase Not Configured'}
-            </span>
-          </button>
         </div>
       </header>
 
@@ -278,7 +278,6 @@ export const AuthScreen: React.FC = () => {
               {mode === 'invite' && 'Redeem Team Invitation'}
               {mode === 'forgot' && 'Reset Password'}
               {mode === 'reset-password' && 'Set New Password'}
-              {mode === 'config' && 'Database & Auth Config'}
             </h1>
             <p className="text-xs text-[#B4B0B0] mt-1.5 leading-relaxed">
               {mode === 'signin' &&
@@ -289,32 +288,8 @@ export const AuthScreen: React.FC = () => {
                 'Enter your account email. Supabase Auth will send you a secure password recovery link.'}
               {mode === 'reset-password' &&
                 'Enter a new password for your account to complete password recovery.'}
-              {mode === 'config' &&
-                'Provide your Supabase URL and anon/publishable key to connect to live authentication.'}
             </p>
           </div>
-
-          {/* Unconfigured Alert Banner */}
-          {!hasConfiguredSupabase && mode !== 'config' && (
-            <div className="mb-4 rounded-xl border border-[#F59E0B]/40 bg-[#F59E0B]/10 p-3 text-xs text-[#F59E0B]">
-              <div className="flex items-start gap-2">
-                <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                <div>
-                  <div className="font-semibold text-white">Supabase credentials needed</div>
-                  <p className="mt-0.5 text-[11px] text-[#F59E0B]/90">
-                    Live email & password authentication requires your Supabase project parameters. Click below to configure them.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setMode('config')}
-                    className="mt-2 text-[11px] font-semibold underline hover:text-white"
-                  >
-                    Open Database & Auth Config →
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Navigation Tabs (Only in signin & invite modes) */}
           {(mode === 'signin' || mode === 'invite') && (
@@ -677,84 +652,7 @@ export const AuthScreen: React.FC = () => {
             </form>
           )}
 
-          {/* 5. SUPABASE CONFIGURATION DRAWER */}
-          {mode === 'config' && (
-            <div className="space-y-3.5 text-xs">
-              <p className="text-[#B4B0B0] text-[11px] leading-relaxed">
-                Configure your Supabase project parameters below to connect to live authentication and PostgreSQL storage.
-              </p>
 
-              <div>
-                <label className="block text-[11px] font-medium text-[#B4B0B0] mb-1">
-                  Supabase Project URL
-                </label>
-                <input
-                  type="text"
-                  value={supabaseConfig.url}
-                  onChange={(e) => setSupabaseConfig({ ...supabaseConfig, url: e.target.value })}
-                  placeholder="https://xyzcompany.supabase.co"
-                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/40 font-mono focus:border-[#8B5CF6] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-[#B4B0B0] mb-1">
-                  Supabase Anon Public Key
-                </label>
-                <input
-                  type="password"
-                  value={supabaseConfig.anonKey}
-                  onChange={(e) => setSupabaseConfig({ ...supabaseConfig, anonKey: e.target.value })}
-                  placeholder="eyJhbGciOi..."
-                  className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/40 font-mono focus:border-[#8B5CF6] focus:outline-none"
-                />
-              </div>
-
-              {testStatus.result && (
-                <div
-                  className={`rounded-xl p-3 border text-xs ${
-                    testStatus.result.success
-                      ? 'border-[#34D399]/40 bg-[#34D399]/10 text-[#34D399]'
-                      : 'border-[#FB7185]/40 bg-[#FB7185]/10 text-[#FB7185]'
-                  }`}
-                >
-                  {testStatus.result.message}
-                </div>
-              )}
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={handleSaveConfig}
-                  className="flex-1 rounded-xl bg-[#211B19] border border-[#38302D] hover:border-[#8B5CF6] py-2 text-xs font-semibold text-[#F4F8FF] transition cursor-pointer"
-                >
-                  Save Config
-                </button>
-                <button
-                  type="button"
-                  onClick={handleTestConnection}
-                  disabled={testStatus.testing}
-                  className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] py-2 text-xs font-semibold text-white transition cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${testStatus.testing ? 'animate-spin' : ''}`} />
-                  <span>{testStatus.testing ? 'Testing...' : 'Test Connection'}</span>
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setMode('signin');
-                  setError(null);
-                  setSuccessMessage(null);
-                }}
-                className="w-full flex items-center justify-center gap-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF] transition pt-2"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Return to Sign In</span>
-              </button>
-            </div>
-          )}
 
           {/* Security Guarantee Footer inside card */}
           <div className="mt-6 pt-4 border-t border-[#38302D]/60 flex items-center justify-between text-[10px] text-[#B4B0B0] font-mono">
@@ -770,7 +668,7 @@ export const AuthScreen: React.FC = () => {
       {/* Footer */}
       <footer className="relative z-10 w-full max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between text-[11px] text-[#B4B0B0] py-4 gap-2">
         <div>
-          &copy; {new Date().getFullYear()} ProjectHub. Private Developer Workspace.
+          &copy; {new Date().getFullYear()} DEBPTH by DevLead Labs. Private Developer Workspace.
         </div>
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5">

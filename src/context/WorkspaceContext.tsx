@@ -60,10 +60,26 @@ interface WorkspaceContextValue {
   switchUser: (userId: string) => void;
   createProject: (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => Project;
   updateProject: (id: string, updates: Partial<Project>) => Project;
+  deleteProject: (projectId: string) => Promise<boolean>;
   addProjectMember: (projectId: string, userId: string, role: ProjectRole, permissions: ProjectMember['permissions']) => void;
   updateProjectMember: (memberId: string, role: ProjectRole, permissions: ProjectMember['permissions']) => void;
   removeProjectMember: (memberId: string) => void;
-  createInvitation: (email: string, role: UserRole, initialLabels: string[], assignedProjectIds: string[], expiresInDays: number) => Invitation;
+  createInvitation: (
+    email: string,
+    role: UserRole,
+    initialLabels: string[],
+    assignedProjectIds: string[],
+    expiresInDays: number,
+    invitedProjectRole?: ProjectRole
+  ) => Invitation;
+  createProjectInvitation: (
+    projectId: string,
+    email: string,
+    projectRole: ProjectRole,
+    permissions?: ProjectMember['permissions'],
+    expiresInDays?: number
+  ) => Invitation;
+  revokeInvitation: (invitationId: string) => void;
   redeemInvitation: (token: string, fullName: string, expectedEmail?: string) => UserProfile;
   createTask: (data: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>) => Task;
   updateTask: (id: string, updates: Partial<Task>) => Task;
@@ -79,6 +95,7 @@ interface WorkspaceContextValue {
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   updateProfileLabels: (userId: string, label: string, action: 'add' | 'remove') => void;
+  updateCurrentUserProfile: (updates: Partial<UserProfile>) => Promise<void>;
   createIdea: (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>) => Idea;
   updateIdea: (id: string, updates: Partial<Idea>) => Idea;
   deleteIdea: (id: string) => void;
@@ -529,6 +546,23 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [currentUserId, refreshWorkspace]
   );
 
+  const deleteProject = useCallback(
+    async (projectId: string) => {
+      if (!currentUser?.email) {
+        throw new Error('Authenticated session required to delete project.');
+      }
+      const success = workspaceRepo.deleteProjectSecure(projectId, currentUser.email);
+      if (success) {
+        refreshWorkspace();
+        if (activeProjectId === projectId) {
+          setActiveProjectId(null);
+        }
+      }
+      return success;
+    },
+    [currentUser?.email, refreshWorkspace, activeProjectId]
+  );
+
   const addProjectMember = useCallback(
     (projectId: string, userId: string, role: ProjectRole, permissions: ProjectMember['permissions']) => {
       workspaceRepo.addProjectMember(projectId, userId, role, permissions, currentUserId);
@@ -555,17 +589,56 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Invitations
   const createInvitation = useCallback(
-    (email: string, role: UserRole, initialLabels: string[], assignedProjectIds: string[], expiresInDays: number) => {
+    (
+      email: string,
+      role: UserRole,
+      initialLabels: string[],
+      assignedProjectIds: string[],
+      expiresInDays: number,
+      invitedProjectRole?: ProjectRole
+    ) => {
       const inv = workspaceRepo.createInvitation(
         email,
         role,
         initialLabels,
         assignedProjectIds,
         expiresInDays,
-        currentUserId
+        currentUserId,
+        invitedProjectRole
       );
       refreshWorkspace();
       return inv;
+    },
+    [currentUserId, refreshWorkspace]
+  );
+
+  const createProjectInvitation = useCallback(
+    (
+      projectId: string,
+      email: string,
+      projectRole: ProjectRole = 'collaborator',
+      _permissions?: ProjectMember['permissions'],
+      expiresInDays: number = 7
+    ) => {
+      const inv = workspaceRepo.createInvitation(
+        email,
+        'member',
+        [],
+        [projectId],
+        expiresInDays,
+        currentUserId,
+        projectRole
+      );
+      refreshWorkspace();
+      return inv;
+    },
+    [currentUserId, refreshWorkspace]
+  );
+
+  const revokeInvitation = useCallback(
+    (invitationId: string) => {
+      workspaceRepo.revokeInvitation(invitationId, currentUserId);
+      refreshWorkspace();
     },
     [currentUserId, refreshWorkspace]
   );
@@ -707,6 +780,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [currentUserId, refreshWorkspace]
   );
 
+  const updateCurrentUserProfile = useCallback(
+    async (updates: Partial<UserProfile>) => {
+      if (!currentUserId) return;
+      workspaceRepo.updateProfile(currentUserId, updates);
+      refreshWorkspace();
+    },
+    [currentUserId, refreshWorkspace]
+  );
+
   // Personal Ideas Actions
   const createIdea = useCallback(
     (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>) => {
@@ -778,10 +860,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         switchUser,
         createProject,
         updateProject,
+        deleteProject,
         addProjectMember,
         updateProjectMember,
         removeProjectMember,
         createInvitation,
+        createProjectInvitation,
+        revokeInvitation,
         redeemInvitation,
         createTask,
         updateTask,
@@ -797,6 +882,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         markNotificationRead,
         markAllNotificationsRead,
         updateProfileLabels,
+        updateCurrentUserProfile,
         createIdea,
         updateIdea,
         deleteIdea,

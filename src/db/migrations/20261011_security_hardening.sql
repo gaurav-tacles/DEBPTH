@@ -1,10 +1,10 @@
 -- ==============================================================================
--- ProjectHub Migration: 20261011_security_hardening.sql
+-- ProjectHub / DEBPTH Migration: 20261011_security_hardening.sql
 -- Description:
 -- 1. Automates Super Admin provisioning via auth.users trigger (realgauravpatel@gmail.com)
 -- 2. Enforces Row-Level Security, eliminates recursion, prevents role escalation
 -- 3. Creates and secures the personal ideas repository (public.ideas)
--- 4. Validates single-use invitations and hardens document storage
+-- 4. Validates single-use invitations and hardens document storage with project-level security
 -- Safe, repeatable, non-destructive migration for Supabase PostgreSQL
 -- ==============================================================================
 
@@ -41,6 +41,7 @@ $$;
 -- Whenever an account is created in Supabase Auth (email/password or invite),
 -- this trigger automatically provisions public.profiles.
 -- Strict rule: ONLY realgauravpatel@gmail.com receives 'super_admin' role.
+-- Note: mfa_enabled is FALSE until user actually enrolls and verifies TOTP.
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -70,7 +71,7 @@ BEGIN
       WHEN LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN ARRAY['Architecture', 'Security', 'Owner']
       ELSE ARRAY['Developer']
     END,
-    TRUE,
+    FALSE,
     NOW(),
     NOW()
   )
@@ -105,7 +106,7 @@ SELECT
     WHEN LOWER(u.email) = 'realgauravpatel@gmail.com' THEN ARRAY['Architecture', 'Security', 'Owner']
     ELSE ARRAY['Developer']
   END,
-  TRUE,
+  FALSE,
   NOW(),
   NOW()
 FROM auth.users u
@@ -191,7 +192,6 @@ CREATE POLICY ideas_owner_delete ON public.ideas
   USING (user_id = auth.uid());
 
 -- 7. Invitations Policies Hardening
--- Prevent anonymous token scraping.
 DROP POLICY IF EXISTS invitations_admin ON public.invitations;
 DROP POLICY IF EXISTS invitations_read_token ON public.invitations;
 DROP POLICY IF EXISTS invitations_read_for_redemption ON public.invitations;
@@ -206,6 +206,8 @@ CREATE POLICY invitations_read_for_redemption ON public.invitations
   USING (accepted_at IS NULL AND expires_at > now());
 
 -- 8. Safe Invitation Redemption Function
+-- Schema-compliant: Sets can_manage_tasks, can_upload_docs, can_view_metrics, can_manage_members
+-- on project_members instead of non-existent 'permissions' JSON column.
 CREATE OR REPLACE FUNCTION public.redeem_invitation_safe(inv_token TEXT, user_full_name TEXT)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -215,65 +217,95 @@ AS $$
 DECLARE
   v_inv public.invitations%ROWTYPE;
   v_user_id UUID := auth.uid();
+  v_user_email TEXT;
   v_proj_id UUID;
 BEGIN
   IF v_user_id IS NULL THEN
     RAISE EXCEPTION 'Authentication required to redeem workspace invitation.';
   END IF;
 
+  SELECT LOWER(email) INTO v_user_email FROM auth.users WHERE id = v_user_id;
+
   SELECT * INTO v_inv
   FROM public.invitations
-  WHERE token = inv_token
+  WHERE token = inv_token OR token_hash = inv_token OR token_hash = encode(digest(inv_token, 'sha256'), 'hex')
   FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Invalid or unknown invitation token.';
   END IF;
 
-  IF v_inv.accepted_at IS NOT NULL THEN
+  IF v_inv.accepted_at IS NOT NULL OR v_inv.status = 'accepted' THEN
     RAISE EXCEPTION 'This invitation has already been redeemed.';
   END IF;
 
+  IF v_inv.revoked_at IS NOT NULL OR v_inv.status = 'revoked' THEN
+    RAISE EXCEPTION 'This invitation has been revoked.';
+  END IF;
+
   IF v_inv.expires_at <= now() THEN
+    UPDATE public.invitations SET status = 'expired' WHERE id = v_inv.id;
     RAISE EXCEPTION 'This invitation has expired.';
   END IF;
 
-  -- Update or insert profile
+  IF v_user_email IS NOT NULL AND LOWER(v_user_email) <> LOWER(v_inv.email) THEN
+    RAISE EXCEPTION 'Email mismatch: This invitation was issued to %, but you are signed in as %.',
+      v_inv.email, v_user_email;
+  END IF;
+
+  -- Update or insert profile without role escalation or faked MFA
   INSERT INTO public.profiles (id, email, full_name, role, labels, mfa_enabled, created_at, last_active_at)
   VALUES (
     v_user_id,
     v_inv.email,
-    user_full_name,
-    v_inv.role,
-    v_inv.initial_labels,
-    true,
+    COALESCE(NULLIF(TRIM(user_full_name), ''), SPLIT_PART(v_inv.email, '@', 1)),
+    CASE
+      WHEN LOWER(v_inv.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+      ELSE 'member'::public.user_workspace_role
+    END,
+    COALESCE(v_inv.initial_labels, ARRAY['Developer']),
+    FALSE,
     now(),
     now()
   )
   ON CONFLICT (id) DO UPDATE
-  SET full_name = EXCLUDED.full_name,
-      labels = EXCLUDED.labels,
+  SET full_name = COALESCE(NULLIF(TRIM(user_full_name), ''), profiles.full_name),
+      labels = array_cat(profiles.labels, EXCLUDED.labels),
       last_active_at = now();
 
-  -- Add project memberships assigned in invitation
+  -- Add project memberships assigned in invitation with schema-accurate column definitions
   IF v_inv.assigned_project_ids IS NOT NULL THEN
     FOREACH v_proj_id IN ARRAY v_inv.assigned_project_ids
     LOOP
-      INSERT INTO public.project_members (project_id, user_id, role, permissions, joined_at)
+      INSERT INTO public.project_members (
+        project_id,
+        user_id,
+        role,
+        can_manage_tasks,
+        can_upload_docs,
+        can_view_metrics,
+        can_manage_members,
+        joined_at
+      )
       VALUES (
         v_proj_id,
         v_user_id,
         'collaborator',
-        '{"canManageTasks": true, "canUploadDocs": true, "canViewMetrics": true, "canManageMembers": false}'::jsonb,
+        TRUE,
+        TRUE,
+        TRUE,
+        FALSE,
         now()
       )
       ON CONFLICT (project_id, user_id) DO NOTHING;
     END LOOP;
   END IF;
 
-  -- Mark invitation as accepted
+  -- Mark invitation as accepted atomically
   UPDATE public.invitations
-  SET accepted_at = now()
+  SET accepted_at = now(),
+      accepted_by = v_user_id,
+      status = 'accepted'
   WHERE id = v_inv.id;
 
   RETURN jsonb_build_object(
@@ -290,26 +322,56 @@ VALUES ('project-documents', 'project-documents', false)
 ON CONFLICT (id) DO UPDATE SET public = false;
 
 DROP POLICY IF EXISTS "Document library download access" ON storage.objects;
+DROP POLICY IF EXISTS "Document library upload access" ON storage.objects;
+DROP POLICY IF EXISTS "Document library delete access" ON storage.objects;
+
 CREATE POLICY "Document library download access" ON storage.objects
   FOR SELECT TO authenticated
   USING (
     bucket_id = 'project-documents' AND (
       public.is_super_admin()
-      OR NOT (name LIKE '%/restricted/%')
       OR EXISTS (
         SELECT 1 FROM public.documents d
-        JOIN public.document_access_grants g ON g.document_id = d.id
-        WHERE d.storage_path = name
-          AND g.user_id = auth.uid()
-          AND g.status = 'approved'
-          AND (g.granted_until IS NULL OR g.granted_until > now())
+        WHERE d.storage_path = storage.objects.name
+          AND public.has_project_access(d.project_id)
+          AND (
+            NOT d.is_restricted
+            OR EXISTS (
+              SELECT 1 FROM public.document_access_grants g
+              WHERE g.document_id = d.id
+                AND g.user_id = auth.uid()
+                AND g.status = 'approved'
+                AND (g.granted_until IS NULL OR g.granted_until > now())
+            )
+          )
       )
     )
   );
 
-DROP POLICY IF EXISTS "Document library upload access" ON storage.objects;
 CREATE POLICY "Document library upload access" ON storage.objects
   FOR INSERT TO authenticated
   WITH CHECK (
-    bucket_id = 'project-documents'
+    bucket_id = 'project-documents' AND (
+      public.is_super_admin()
+      OR EXISTS (
+        SELECT 1 FROM public.project_members pm
+        WHERE pm.user_id = auth.uid()
+          AND storage.objects.name LIKE 'projects/' || pm.project_id::text || '/%'
+          AND (pm.role = 'lead' OR pm.can_upload_docs = TRUE)
+      )
+    )
+  );
+
+CREATE POLICY "Document library delete access" ON storage.objects
+  FOR DELETE TO authenticated
+  USING (
+    bucket_id = 'project-documents' AND (
+      public.is_super_admin()
+      OR EXISTS (
+        SELECT 1 FROM public.documents d
+        JOIN public.project_members pm ON pm.project_id = d.project_id AND pm.user_id = auth.uid()
+        WHERE d.storage_path = storage.objects.name
+          AND (pm.role = 'lead' OR d.uploaded_by = auth.uid())
+      )
+    )
   );

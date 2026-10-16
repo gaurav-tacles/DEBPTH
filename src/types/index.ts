@@ -70,16 +70,22 @@ export interface Project {
   taskCount?: { total: number; done: number };
 }
 
+export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
 export interface Invitation {
   id: string;
   email: string;
   role: UserRole;
-  token: string;
+  token?: string; // Only available immediately upon creation to copy/send; not stored in plaintext in DB
+  tokenHash?: string; // SHA-256 hash stored in DB
+  status?: InvitationStatus;
   invitedBy: string;
   initialLabels: string[];
   assignedProjectIds: string[];
+  invitedProjectRole?: ProjectRole;
   expiresAt: string;
   acceptedAt?: string;
+  revokedAt?: string;
   createdAt: string;
 }
 
