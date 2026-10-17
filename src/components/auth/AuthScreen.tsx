@@ -15,11 +15,9 @@ import {
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import {
-  getStoredSupabaseConfig,
-  saveSupabaseConfig,
-  testSupabaseConnection,
   isSupabaseConfigured,
 } from '../../lib/supabase';
+import { workspaceRepo } from '../../services/workspaceRepository';
 
 export const AuthScreen: React.FC = () => {
   const {
@@ -47,12 +45,7 @@ export const AuthScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Supabase live configuration state
-  const [supabaseConfig, setSupabaseConfig] = useState(getStoredSupabaseConfig());
-  const [testStatus, setTestStatus] = useState<{
-    testing: boolean;
-    result?: { success: boolean; message: string; latencyMs?: number };
-  }>({ testing: false });
+
 
   const hasConfiguredSupabase = isSupabaseConfigured();
 
@@ -77,6 +70,60 @@ export const AuthScreen: React.FC = () => {
       }
     }
   }, []);
+
+  // Invitation token dynamic inspection state
+  const [tokenInspection, setTokenInspection] = useState<{
+    status: 'idle' | 'checking' | 'valid' | 'invalid';
+    email?: string;
+    inviterName?: string;
+    role?: string;
+    projectName?: string;
+    reason?: string;
+  }>({ status: 'idle' });
+
+  // Auto-inspect invitation token when pasted or populated from URL
+  useEffect(() => {
+    const clean = inviteToken.trim();
+    if (!clean || clean.length < 8) {
+      setTokenInspection({ status: 'idle' });
+      return;
+    }
+
+    let isMounted = true;
+    setTokenInspection((prev) => ({ ...prev, status: 'checking' }));
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await workspaceRepo.inspectInvitationRemote(clean);
+        if (!isMounted) return;
+        if (res.valid) {
+          setTokenInspection({
+            status: 'valid',
+            email: res.email,
+            inviterName: res.inviterName,
+            role: res.role,
+            projectName: res.projectName,
+          });
+          if (res.email) {
+            setEmail(res.email);
+          }
+        } else {
+          setTokenInspection({
+            status: 'invalid',
+            reason: res.reason,
+            email: res.email,
+          });
+        }
+      } catch (err) {
+        if (isMounted) setTokenInspection({ status: 'idle' });
+      }
+    }, 250);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, [inviteToken]);
 
   // Switch to reset-password mode if password recovery hash/event is detected
   useEffect(() => {
@@ -119,7 +166,8 @@ export const AuthScreen: React.FC = () => {
   // Handle Sign Up with Invitation Token
   const handleInviteRegistration = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteToken.trim()) {
+    const cleanToken = inviteToken.trim();
+    if (!cleanToken) {
       setError('Please enter your invitation token.');
       return;
     }
@@ -132,31 +180,49 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    if (!hasConfiguredSupabase) {
-      setError('Supabase credentials are required to complete account registration.');
-      return;
-    }
-
     setLoading(true);
     setError(null);
     setSuccessMessage(null);
     try {
-      // 1. Redeem invitation and verify matching email and token validity
-      try {
-        redeemInvitation(inviteToken.trim(), fullName.trim(), email.trim());
-      } catch (repoErr: unknown) {
-        setError(repoErr instanceof Error ? repoErr.message : 'Invalid or expired invitation token.');
+      // 1. Inspect invitation validity against Supabase or local repo
+      const inspection = await workspaceRepo.inspectInvitationRemote(cleanToken);
+      if (!inspection.valid) {
+        let msg = 'Invalid or unknown invitation token.';
+        if (inspection.reason === 'revoked') msg = 'This invitation has been revoked by workspace administrators.';
+        if (inspection.reason === 'accepted') msg = 'This invitation has already been redeemed.';
+        if (inspection.reason === 'expired') msg = 'This invitation has expired.';
+        setError(msg);
         setLoading(false);
         return;
       }
 
-      setSuccessMessage('Invitation token verified! Registering account...');
-      const res = await signUpWithEmail(email.trim(), password, fullName.trim(), inviteToken.trim());
+      // 2. Strict recipient email matching
+      if (inspection.email && inspection.email.toLowerCase() !== email.trim().toLowerCase()) {
+        setError(`This invitation was issued to ${inspection.email}. Please register with that matching email address.`);
+        setLoading(false);
+        return;
+      }
+
+      // 3. If Supabase is not configured (offline / local dev mode)
+      if (!hasConfiguredSupabase) {
+        try {
+          redeemInvitation(cleanToken, fullName.trim(), email.trim());
+          setSuccessMessage('Invitation redeemed successfully! Workspace access granted.');
+        } catch (repoErr: unknown) {
+          setError(repoErr instanceof Error ? repoErr.message : 'Failed to redeem invitation.');
+        }
+        setLoading(false);
+        return;
+      }
+
+      // 4. Authenticate and register user in Supabase
+      setSuccessMessage('Invitation verified! Registering your workspace account...');
+      const res = await signUpWithEmail(email.trim(), password, fullName.trim(), cleanToken);
       if (res.error) {
         setError(res.error.message || 'Failed to complete registration.');
       } else if (res.emailConfirmationRequired) {
         setSuccessMessage(
-          'Registration submitted! A confirmation email has been sent. Please verify your email or sign in once confirmed.'
+          'Registration submitted! A confirmation email has been sent. Please verify your email, then sign in.'
         );
       }
     } catch (err: unknown) {
@@ -231,19 +297,7 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  // Handle saving Supabase credentials in browser storage
-  const handleSaveConfig = () => {
-    saveSupabaseConfig(supabaseConfig.url.trim(), supabaseConfig.anonKey.trim());
-    setSuccessMessage('Supabase credentials saved successfully!');
-    setTimeout(() => setSuccessMessage(null), 3000);
-  };
 
-  // Handle testing connection
-  const handleTestConnection = async () => {
-    setTestStatus({ testing: true });
-    const res = await testSupabaseConnection(supabaseConfig.url.trim(), supabaseConfig.anonKey.trim());
-    setTestStatus({ testing: false, result: res });
-  };
 
   return (
     <div className="min-h-screen bg-[#0F0B0A] text-[#F4F8FF] font-['Geist',sans-serif] selection:bg-[#8B5CF6] selection:text-white flex flex-col justify-between p-4 sm:p-6 lg:p-8">
@@ -427,6 +481,44 @@ export const AuthScreen: React.FC = () => {
                 Registration is reserved for invited team members. Enter the invitation token issued by the Super Admin to activate your standard member access.
               </div>
 
+              {/* Dynamic Token Inspection Badge */}
+              {tokenInspection.status === 'checking' && (
+                <div className="flex items-center gap-2 rounded-xl border border-[#38302D] bg-[#211B19]/30 p-2.5 text-xs text-[#B4B0B0]">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#8B5CF6]" />
+                  <span>Verifying invitation status with workspace security...</span>
+                </div>
+              )}
+
+              {tokenInspection.status === 'valid' && (
+                <div className="rounded-xl border border-[#34D399]/40 bg-[#34D399]/10 p-3 text-xs text-[#34D399] flex items-start gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#34D399]" />
+                  <div>
+                    <div className="font-semibold text-[#34D399]">Verified Team Invitation</div>
+                    <div className="text-[11px] text-[#34D399]/90 mt-0.5 leading-relaxed">
+                      Assigned to <span className="font-mono font-medium underline">{tokenInspection.email}</span>
+                      {tokenInspection.inviterName ? ` by ${tokenInspection.inviterName}` : ''}
+                      {tokenInspection.projectName ? ` for project "${tokenInspection.projectName}"` : ''}.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {tokenInspection.status === 'invalid' && (
+                <div className="rounded-xl border border-[#FB7185]/40 bg-[#FB7185]/10 p-3 text-xs text-[#FB7185] flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#FB7185]" />
+                  <div>
+                    <div className="font-semibold">Invalid Invitation Token</div>
+                    <div className="text-[11px] text-[#FB7185]/90 mt-0.5 leading-relaxed">
+                      {tokenInspection.reason === 'revoked' && 'This invitation was revoked by workspace administrators.'}
+                      {tokenInspection.reason === 'accepted' && 'This invitation has already been redeemed.'}
+                      {tokenInspection.reason === 'expired' && 'This invitation has expired.'}
+                      {(!tokenInspection.reason || tokenInspection.reason === 'not_found' || tokenInspection.reason === 'invalid_input') &&
+                        'No active invitation found matching this token. Please check the link or contact your Super Admin.'}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
                   Invitation Token *
@@ -459,18 +551,31 @@ export const AuthScreen: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[#B4B0B0] mb-1">
-                  Invited Email Address *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-[#B4B0B0]">
+                    Invited Email Address *
+                  </label>
+                  {tokenInspection.status === 'valid' && tokenInspection.email && (
+                    <span className="text-[10px] text-[#34D399] font-mono flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" />
+                      Locked to invitation
+                    </span>
+                  )}
+                </div>
                 <div className="relative">
                   <Mail className="absolute left-3 top-2.5 w-4 h-4 text-[#B4B0B0]" />
                   <input
                     type="email"
                     required
+                    readOnly={tokenInspection.status === 'valid' && Boolean(tokenInspection.email)}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="colleague@domain.com"
-                    className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono"
+                    className={`w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] pl-9 pr-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/50 focus:border-[#8B5CF6] focus:outline-none font-mono ${
+                      tokenInspection.status === 'valid' && tokenInspection.email
+                        ? 'opacity-85 cursor-not-allowed bg-[#150F0D]'
+                        : ''
+                    }`}
                   />
                 </div>
               </div>

@@ -21,6 +21,28 @@ export function generateSecureToken(): string {
 }
 
 /**
+ * Validate UUID string (v4 or general format)
+ */
+export function isValidUuid(str: string): boolean {
+  if (!str) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str.trim());
+}
+
+/**
+ * Generate RFC4122 v4 UUID compatible with PostgreSQL uuid type
+ */
+export function generateUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
  * Computes SHA-256 hash of a string, returning 64-char hex string.
  * Uses Web Crypto API (SubtleCrypto) in browser/modern Node, with exact standard fallback.
  */

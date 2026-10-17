@@ -107,7 +107,31 @@ async function runTests() {
   console.assert(expiredThrew, 'Expired invitation rejected');
   console.log('✓ Test 7: Expiration enforcement verified');
 
-  console.log('--- ALL 7 INVITATION SECURITY TESTS PASSED SUCCESSFULLY ---');
+  // Test 8: Remote Inspection for incoming recipients (valid token)
+  const freshInv = workspaceRepo.createInvitation(
+    'fresh@apex.test',
+    'member',
+    ['Frontend'],
+    [],
+    7,
+    adminProfile.id
+  );
+  const inspectionValid = await workspaceRepo.inspectInvitationRemote(freshInv.token!);
+  console.assert(inspectionValid.valid === true, 'Fresh invitation must inspect as valid');
+  console.assert(inspectionValid.email === 'fresh@apex.test', 'Inspection must return invited email');
+  console.log('✓ Test 8: Safe token inspection for incoming recipient verified');
+
+  // Test 9: Inspection rejection for unknown or revoked tokens
+  const inspectionInvalid = await workspaceRepo.inspectInvitationRemote('ph_inv_nonexistent_token_12345');
+  console.assert(inspectionInvalid.valid === false, 'Non-existent token must inspect as invalid');
+  console.assert(inspectionInvalid.reason === 'not_found', 'Reason must be not_found');
+
+  const inspectionRevoked = await workspaceRepo.inspectInvitationRemote(inv2.token!);
+  console.assert(inspectionRevoked.valid === false, 'Revoked token must inspect as invalid');
+  console.assert(inspectionRevoked.reason === 'revoked', 'Reason must be revoked');
+  console.log('✓ Test 9: Safe token rejection during inspection verified');
+
+  console.log('--- ALL 9 INVITATION SECURITY TESTS PASSED SUCCESSFULLY ---');
 }
 
 runTests().catch((e) => {

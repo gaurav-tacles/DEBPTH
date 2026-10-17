@@ -17,7 +17,7 @@ import {
 } from '../types';
 import { logger } from '../lib/logger';
 import { getSupabaseClient } from '../lib/supabase';
-import { generateSecureToken, hashTokenSync } from '../lib/crypto';
+import { generateSecureToken, hashTokenSync, generateUuid, isValidUuid } from '../lib/crypto';
 
 const STORAGE_KEY_DATA = 'projecthub_workspace_v3';
 
@@ -705,8 +705,9 @@ class WorkspaceRepository {
       }
     }
 
+    const generatedId = generateUuid();
     const newInv: Invitation = {
-      id: `inv-${Date.now()}`,
+      id: generatedId,
       email: email.trim().toLowerCase(),
       role: safeRole,
       token: rawToken, // Returned to the creator for copy/delivery, not retained in DB
@@ -728,20 +729,27 @@ class WorkspaceRepository {
 
     const supabase = getSupabaseClient();
     if (supabase) {
+      const validAssignedProjectIds = (assignedProjectIds || []).filter(isValidUuid);
+      const isInviterUuid = isValidUuid(invitedBy);
+
+      const dbPayload: Record<string, any> = {
+        id: generatedId,
+        email: newInv.email,
+        role: newInv.role,
+        token_hash: tokenHash,
+        token: rawToken,
+        initial_labels: initialLabels,
+        assigned_project_ids: validAssignedProjectIds,
+        invited_project_role: invitedProjectRole,
+        expires_at: newInv.expiresAt,
+        status: 'pending',
+      };
+      if (isInviterUuid) {
+        dbPayload.invited_by = invitedBy;
+      }
+
       Promise.resolve(
-        supabase.from('invitations').insert({
-          id: newInv.id,
-          email: newInv.email,
-          role: newInv.role,
-          token_hash: tokenHash,
-          token: rawToken, // Supabase schema compatibility
-          invited_by: invitedBy,
-          initial_labels: initialLabels,
-          assigned_project_ids: assignedProjectIds,
-          invited_project_role: invitedProjectRole,
-          expires_at: newInv.expiresAt,
-          status: 'pending',
-        })
+        supabase.from('invitations').insert(dbPayload)
       ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not save invitation in Supabase', e));
     }
 
@@ -785,6 +793,77 @@ class WorkspaceRepository {
     }
 
     logger.info('WorkspaceRepository', `Revoked invitation ${invitationId} for ${inv.email}`);
+  }
+
+  /**
+   * Safe inspection of an invitation token against Supabase (RPC) with fallback to local storage.
+   * Can be safely called by unauthenticated incoming recipients.
+   */
+  async inspectInvitationRemote(tokenOrHash: string): Promise<{
+    valid: boolean;
+    id?: string;
+    email?: string;
+    scope?: string;
+    role?: UserRole;
+    projectName?: string;
+    projectRole?: ProjectRole;
+    inviterName?: string;
+    expiresAt?: string;
+    reason?: string;
+  }> {
+    const cleanToken = tokenOrHash.trim();
+    if (!cleanToken) {
+      return { valid: false, reason: 'invalid_input' };
+    }
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.rpc('inspect_invitation_by_token', {
+          p_token_or_hash: cleanToken,
+        });
+        if (!error && data) {
+          return {
+            valid: Boolean(data.valid),
+            id: data.id,
+            email: data.email,
+            scope: data.scope,
+            role: data.role,
+            projectName: data.projectName,
+            projectRole: data.projectRole,
+            inviterName: data.inviterName,
+            expiresAt: data.expiresAt,
+            reason: data.reason,
+          };
+        }
+        if (error) {
+          logger.warn('WorkspaceRepository', 'RPC inspect_invitation_by_token returned error', error);
+        }
+      } catch (err) {
+        logger.warn('WorkspaceRepository', 'RPC inspect_invitation_by_token query threw', err);
+      }
+    }
+
+    // Fallback to local memory / local storage
+    const computedHash = hashTokenSync(cleanToken);
+    const inv = this.db.invitations.find(
+      (i) => i.tokenHash === computedHash || i.token === cleanToken || i.tokenHash === cleanToken || i.token === computedHash
+    );
+
+    if (!inv) return { valid: false, reason: 'not_found' };
+    if (inv.revokedAt || inv.status === 'revoked') return { valid: false, reason: 'revoked', email: inv.email };
+    if (inv.acceptedAt || inv.status === 'accepted') return { valid: false, reason: 'accepted', email: inv.email };
+    if (new Date(inv.expiresAt) <= new Date()) return { valid: false, reason: 'expired', email: inv.email };
+
+    return {
+      valid: true,
+      id: inv.id,
+      email: inv.email,
+      role: inv.role,
+      projectRole: inv.invitedProjectRole,
+      expiresAt: inv.expiresAt,
+      inviterName: this.getProfileById(inv.invitedBy)?.fullName || 'Workspace Admin',
+    };
   }
 
   redeemInvitation(tokenOrHash: string, fullName: string, expectedEmail?: string): UserProfile {

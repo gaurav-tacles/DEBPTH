@@ -313,6 +313,20 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setSession(data.session);
           setCurrentUserId(profile.id);
           setIsAuthenticated(true);
+
+          // If user metadata had an invite_token that wasn't redeemed yet (e.g. after email confirmation)
+          const pendingInviteToken = data.user.user_metadata?.invite_token;
+          if (pendingInviteToken) {
+            try {
+              await supabase.rpc('redeem_invitation_atomic', {
+                p_token_hash: pendingInviteToken.trim(),
+                p_user_full_name: profile.fullName,
+              });
+            } catch (e) {
+              // Expected if already redeemed
+            }
+          }
+
           const currentProfiles = workspaceRepo.getProfiles();
           setProfiles(currentProfiles);
           localStorage.setItem(AUTH_TOKEN_KEY, 'true');
@@ -367,6 +381,24 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               setSession(data.session);
               setCurrentUserId(profile.id);
               setIsAuthenticated(true);
+
+              // Atomically redeem invitation in Supabase
+              if (inviteToken) {
+                try {
+                  await supabase.rpc('redeem_invitation_atomic', {
+                    p_token_hash: inviteToken.trim(),
+                    p_user_full_name: fullName.trim(),
+                  });
+                } catch (rpcErr) {
+                  logger.warn('WorkspaceContext', 'Could not redeem invitation via RPC on signUp', rpcErr);
+                }
+                try {
+                  workspaceRepo.redeemInvitation(inviteToken, fullName, email);
+                } catch (localErr) {
+                  // already redeemed or only in remote
+                }
+              }
+
               const currentProfiles = workspaceRepo.getProfiles();
               setProfiles(currentProfiles);
               localStorage.setItem(AUTH_TOKEN_KEY, 'true');
