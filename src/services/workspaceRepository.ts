@@ -71,6 +71,16 @@ class WorkspaceRepository {
           const parsed = JSON.parse(stored);
           if (parsed && Array.isArray(parsed.profiles) && Array.isArray(parsed.projects)) {
             if (!Array.isArray(parsed.ideas)) parsed.ideas = [];
+            // Security: Sanitize existing stored invitations to eliminate legacy plaintext tokens
+            if (Array.isArray(parsed.invitations)) {
+              parsed.invitations = parsed.invitations.map((inv: any) => {
+                if (inv && typeof inv === 'object' && 'token' in inv) {
+                  const { token: _rawToken, ...safeInv } = inv;
+                  return safeInv;
+                }
+                return inv;
+              });
+            }
             return parsed;
           }
         }
@@ -85,10 +95,22 @@ class WorkspaceRepository {
 
   private saveDatabase(data: WorkspaceDatabase) {
     try {
+      // Security: Ensure raw plaintext invitation tokens are NEVER persisted to localStorage or persistent repository state
+      const sanitizedData: WorkspaceDatabase = {
+        ...data,
+        invitations: (data.invitations || []).map((inv) => {
+          if (inv && typeof inv === 'object' && 'token' in inv) {
+            const { token: _rawToken, ...safeInv } = inv;
+            return safeInv;
+          }
+          return inv;
+        }),
+      };
+
       if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(data));
+        localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(sanitizedData));
       }
-      this.db = data;
+      this.db = sanitizedData;
     } catch (e) {
       logger.error('WorkspaceRepository', 'Failed to save database to storage', e);
     }
@@ -229,139 +251,165 @@ class WorkspaceRepository {
       logger.info('WorkspaceRepository', 'Syncing workspace data with Supabase...');
 
       // 1. Sync profiles
-      const { data: remoteProfiles } = await supabase.from('profiles').select('*');
-      const mappedProfiles: UserProfile[] = (remoteProfiles || []).map((p) => ({
-        id: p.id,
-        email: p.email,
-        fullName: p.full_name,
-        avatarUrl: p.avatar_url,
-        role: p.role,
-        labels: p.labels || [],
-        githubUsername: p.github_username,
-        mfaEnabled: Boolean(p.mfa_enabled),
-        createdAt: p.created_at,
-        lastActiveAt: p.last_active_at,
-      }));
+      const { data: remoteProfiles, error: profErr } = await supabase.from('profiles').select('*');
+      let mappedProfiles: UserProfile[] = this.db.profiles;
+      if (!profErr && remoteProfiles !== null) {
+        mappedProfiles = remoteProfiles.map((p) => ({
+          id: p.id,
+          email: p.email,
+          fullName: p.full_name,
+          avatarUrl: p.avatar_url,
+          role: p.role,
+          labels: p.labels || [],
+          githubUsername: p.github_username,
+          mfaEnabled: Boolean(p.mfa_enabled),
+          createdAt: p.created_at,
+          lastActiveAt: p.last_active_at,
+        }));
+      } else if (profErr) {
+        logger.error('WorkspaceRepository', 'Error fetching profiles from Supabase', profErr);
+      }
 
       // 2. Sync projects
       const { data: remoteProjects, error: projErr } = await supabase.from('projects').select('*');
-      if (projErr) {
+      let mappedProjects: Project[] = this.db.projects;
+      if (!projErr && remoteProjects !== null) {
+        mappedProjects = remoteProjects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          slug: p.slug,
+          summary: p.summary,
+          problemStatement: p.problem_statement,
+          description: p.description,
+          goals: p.goals || [],
+          features: p.features || [],
+          status: p.status,
+          priority: p.priority,
+          techStack: p.tech_stack || [],
+          repositories: p.repositories || [],
+          links: p.links || [],
+          startDate: p.start_date,
+          targetDate: p.target_date,
+          ownerId: p.owner_id,
+          archived: Boolean(p.archived),
+          createdAt: p.created_at,
+          updatedAt: p.updated_at,
+        }));
+      } else if (projErr) {
         logger.error('WorkspaceRepository', 'Error fetching projects from Supabase', projErr);
       }
-      const mappedProjects: Project[] = (remoteProjects || []).map((p) => ({
-        id: p.id,
-        name: p.name,
-        slug: p.slug,
-        summary: p.summary,
-        problemStatement: p.problem_statement,
-        description: p.description,
-        goals: p.goals || [],
-        features: p.features || [],
-        status: p.status,
-        priority: p.priority,
-        techStack: p.tech_stack || [],
-        repositories: p.repositories || [],
-        links: p.links || [],
-        startDate: p.start_date,
-        targetDate: p.target_date,
-        ownerId: p.owner_id,
-        archived: Boolean(p.archived),
-        createdAt: p.created_at,
-        updatedAt: p.updated_at,
-      }));
 
       // 3. Sync project members
       const { data: remoteMembers, error: memErr } = await supabase.from('project_members').select('*');
-      if (memErr) {
+      let mappedMembers: ProjectMember[] = this.db.projectMembers;
+      if (!memErr && remoteMembers !== null) {
+        mappedMembers = remoteMembers.map((pm) => ({
+          id: pm.id,
+          projectId: pm.project_id,
+          userId: pm.user_id,
+          role: pm.role,
+          permissions: {
+            canManageTasks: Boolean(pm.can_manage_tasks),
+            canUploadDocs: Boolean(pm.can_upload_docs),
+            canViewMetrics: Boolean(pm.can_view_metrics),
+            canManageMembers: Boolean(pm.can_manage_members),
+          },
+          joinedAt: pm.joined_at,
+        }));
+      } else if (memErr) {
         logger.error('WorkspaceRepository', 'Error fetching project members from Supabase', memErr);
       }
-      const mappedMembers: ProjectMember[] = (remoteMembers || []).map((pm) => ({
-        id: pm.id,
-        projectId: pm.project_id,
-        userId: pm.user_id,
-        role: pm.role,
-        permissions: {
-          canManageTasks: Boolean(pm.can_manage_tasks),
-          canUploadDocs: Boolean(pm.can_upload_docs),
-          canViewMetrics: Boolean(pm.can_view_metrics),
-          canManageMembers: Boolean(pm.can_manage_members),
-        },
-        joinedAt: pm.joined_at,
-      }));
 
       // 4. Sync announcements (visible to all authenticated workspace members)
       const { data: remoteAnnouncements, error: ancErr } = await supabase
         .from('announcements')
         .select('*')
         .order('created_at', { ascending: false });
-      if (ancErr) {
+      let mappedAnnouncements: Announcement[] = this.db.announcements;
+      if (!ancErr && remoteAnnouncements !== null) {
+        mappedAnnouncements = remoteAnnouncements.map((a) => ({
+          id: a.id,
+          title: a.title,
+          content: a.content,
+          priority: a.priority,
+          targetType: a.target_type,
+          targetMeta: a.target_meta || {},
+          createdBy: a.created_by,
+          createdAt: a.created_at,
+        }));
+      } else if (ancErr) {
         logger.error('WorkspaceRepository', 'Error fetching announcements from Supabase', ancErr);
       }
-      const mappedAnnouncements: Announcement[] = (remoteAnnouncements || []).map((a) => ({
-        id: a.id,
-        title: a.title,
-        content: a.content,
-        priority: a.priority,
-        targetType: a.target_type,
-        targetMeta: a.target_meta || {},
-        createdBy: a.created_by,
-        createdAt: a.created_at,
-      }));
 
       // 5. Sync tasks
-      const { data: remoteTasks } = await supabase.from('tasks').select('*');
-      const mappedTasks: Task[] = (remoteTasks || []).map((t) => ({
-        id: t.id,
-        projectId: t.project_id,
-        title: t.title,
-        description: t.description,
-        status: t.status,
-        priority: t.priority,
-        assigneeId: t.assignee_id,
-        dueDate: t.due_date,
-        milestoneId: t.milestone_id,
-        tags: t.tags || [],
-        createdAt: t.created_at,
-        updatedAt: t.updated_at,
-      }));
+      const { data: remoteTasks, error: taskErr } = await supabase.from('tasks').select('*');
+      let mappedTasks: Task[] = this.db.tasks;
+      if (!taskErr && remoteTasks !== null) {
+        mappedTasks = remoteTasks.map((t) => ({
+          id: t.id,
+          projectId: t.project_id,
+          title: t.title,
+          description: t.description,
+          status: t.status,
+          priority: t.priority,
+          assigneeId: t.assignee_id,
+          dueDate: t.due_date,
+          milestoneId: t.milestone_id,
+          tags: t.tags || [],
+          createdAt: t.created_at,
+          updatedAt: t.updated_at,
+        }));
+      } else if (taskErr) {
+        logger.error('WorkspaceRepository', 'Error fetching tasks from Supabase', taskErr);
+      }
 
       // 6. Sync milestones
-      const { data: remoteMilestones } = await supabase.from('milestones').select('*');
-      const mappedMilestones: Milestone[] = (remoteMilestones || []).map((m) => ({
-        id: m.id,
-        projectId: m.project_id,
-        title: m.title,
-        description: m.description,
-        status: m.status,
-        dueDate: m.due_date,
-        createdAt: m.created_at,
-      }));
+      const { data: remoteMilestones, error: mileErr } = await supabase.from('milestones').select('*');
+      let mappedMilestones: Milestone[] = this.db.milestones;
+      if (!mileErr && remoteMilestones !== null) {
+        mappedMilestones = remoteMilestones.map((m) => ({
+          id: m.id,
+          projectId: m.project_id,
+          title: m.title,
+          description: m.description,
+          status: m.status,
+          dueDate: m.due_date,
+          createdAt: m.created_at,
+        }));
+      } else if (mileErr) {
+        logger.error('WorkspaceRepository', 'Error fetching milestones from Supabase', mileErr);
+      }
 
       // 7. Sync documents
-      const { data: remoteDocs } = await supabase.from('documents').select('*');
-      const mappedDocs: ProjectDocument[] = (remoteDocs || []).map((d) => ({
-        id: d.id,
-        projectId: d.project_id,
-        title: d.title,
-        fileName: d.file_name,
-        fileSize: d.file_size,
-        mimeType: d.mime_type,
-        storagePath: d.storage_path,
-        isRestricted: Boolean(d.is_restricted),
-        uploadedBy: d.uploaded_by,
-        createdAt: d.created_at,
-        updatedAt: d.updated_at || d.created_at,
-      }));
+      const { data: remoteDocs, error: docErr } = await supabase.from('documents').select('*');
+      let mappedDocs: ProjectDocument[] = this.db.documents;
+      if (!docErr && remoteDocs !== null) {
+        mappedDocs = remoteDocs.map((d) => ({
+          id: d.id,
+          projectId: d.project_id,
+          title: d.title,
+          fileName: d.file_name,
+          fileSize: d.file_size,
+          mimeType: d.mime_type,
+          storagePath: d.storage_path,
+          isRestricted: Boolean(d.is_restricted),
+          uploadedBy: d.uploaded_by,
+          createdAt: d.created_at,
+          updatedAt: d.updated_at || d.created_at,
+        }));
+      } else if (docErr) {
+        logger.error('WorkspaceRepository', 'Error fetching documents from Supabase', docErr);
+      }
 
-      // 8. Sync ideas (for current authenticated user)
+      // 8. Sync ideas (strictly isolated to current authenticated user)
       let mappedIdeas: Idea[] = this.db.ideas;
       if (currentUserId) {
-        const { data: remoteIdeas } = await supabase
+        const { data: remoteIdeas, error: ideaErr } = await supabase
           .from('ideas')
           .select('*')
           .eq('user_id', currentUserId);
 
-        if (remoteIdeas) {
+        if (!ideaErr && remoteIdeas !== null) {
           mappedIdeas = remoteIdeas.map((i) => ({
             id: i.id,
             userId: i.user_id,
@@ -375,19 +423,21 @@ class WorkspaceRepository {
             createdAt: i.created_at,
             updatedAt: i.updated_at,
           }));
+        } else if (ideaErr) {
+          logger.error('WorkspaceRepository', 'Error fetching ideas from Supabase', ideaErr);
         }
       }
 
-      // 9. Sync notifications (for current authenticated user)
+      // 9. Sync notifications (strictly recipient filtered)
       let mappedNotifications: AppNotification[] = this.db.notifications;
       if (currentUserId) {
-        const { data: remoteNotifs } = await supabase
+        const { data: remoteNotifs, error: notifErr } = await supabase
           .from('notifications')
           .select('*')
           .eq('recipient_id', currentUserId)
           .order('created_at', { ascending: false });
 
-        if (remoteNotifs) {
+        if (!notifErr && remoteNotifs !== null) {
           mappedNotifications = remoteNotifs.map((n) => ({
             id: n.id,
             recipientId: n.recipient_id,
@@ -398,56 +448,68 @@ class WorkspaceRepository {
             isRead: Boolean(n.is_read),
             createdAt: n.created_at,
           }));
+        } else if (notifErr) {
+          logger.error('WorkspaceRepository', 'Error fetching notifications from Supabase', notifErr);
         }
       }
 
-      // 10. Sync suggestions (shared with all workspace members)
-      const { data: remoteSuggestions } = await supabase
+      // 10. Sync suggestions (authoritative remote state; if remote table has 0 rows, collection is legitimately empty)
+      const { data: remoteSuggestions, error: sugErr } = await supabase
         .from('suggestions')
         .select('*')
         .order('created_at', { ascending: false });
-      const mappedSuggestions: Suggestion[] = (remoteSuggestions || []).map((s) => ({
-        id: s.id,
-        title: s.title,
-        description: s.description,
-        category: s.category,
-        projectId: s.project_id || undefined,
-        submitterId: s.submitter_id,
-        status: s.status,
-        adminNotes: s.admin_notes || undefined,
-        adminResponse: s.admin_response || undefined,
-        convertedTaskId: s.converted_task_id || undefined,
-        createdAt: s.created_at,
-        updatedAt: s.updated_at,
-      }));
+      let mappedSuggestions: Suggestion[] = this.db.suggestions;
+      if (!sugErr && remoteSuggestions !== null) {
+        mappedSuggestions = remoteSuggestions.map((s) => ({
+          id: s.id,
+          title: s.title,
+          description: s.description,
+          category: s.category,
+          projectId: s.project_id || undefined,
+          submitterId: s.submitter_id,
+          status: s.status,
+          adminNotes: s.admin_notes || undefined,
+          adminResponse: s.admin_response || undefined,
+          convertedTaskId: s.converted_task_id || undefined,
+          createdAt: s.created_at,
+          updatedAt: s.updated_at,
+        }));
+      } else if (sugErr) {
+        logger.error('WorkspaceRepository', 'Error fetching suggestions from Supabase', sugErr);
+      }
 
-      // 11. Sync document access grants
-      const { data: remoteGrants } = await supabase.from('document_access_grants').select('*');
-      const mappedGrants: DocumentAccessGrant[] = (remoteGrants || []).map((g) => ({
-        id: g.id,
-        documentId: g.document_id,
-        userId: g.user_id,
-        status: g.status,
-        reason: g.reason || undefined,
-        grantedUntil: g.granted_until || undefined,
-        requestedAt: g.requested_at,
-        reviewedBy: g.reviewed_by || undefined,
-        reviewedAt: g.reviewed_at || undefined,
-        reviewerNotes: g.reviewer_notes || undefined,
-      }));
+      // 11. Sync document access grants (authoritative remote state; if remote table has 0 rows, collection is legitimately empty)
+      const { data: remoteGrants, error: grantErr } = await supabase.from('document_access_grants').select('*');
+      let mappedGrants: DocumentAccessGrant[] = this.db.documentGrants;
+      if (!grantErr && remoteGrants !== null) {
+        mappedGrants = remoteGrants.map((g) => ({
+          id: g.id,
+          documentId: g.document_id,
+          userId: g.user_id,
+          status: g.status,
+          reason: g.reason || undefined,
+          grantedUntil: g.granted_until || undefined,
+          requestedAt: g.requested_at,
+          reviewedBy: g.reviewed_by || undefined,
+          reviewedAt: g.reviewed_at || undefined,
+          reviewerNotes: g.reviewer_notes || undefined,
+        }));
+      } else if (grantErr) {
+        logger.error('WorkspaceRepository', 'Error fetching document access grants from Supabase', grantErr);
+      }
 
-      // 12. Persist complete synchronized workspace state
+      // 12. Persist complete synchronized workspace state authoritatively
       this.saveDatabase({
         ...this.db,
-        profiles: mappedProfiles.length > 0 ? mappedProfiles : this.db.profiles,
+        profiles: mappedProfiles,
         projects: mappedProjects,
         projectMembers: mappedMembers,
         announcements: mappedAnnouncements,
         tasks: mappedTasks,
         milestones: mappedMilestones,
         documents: mappedDocs,
-        documentGrants: mappedGrants.length > 0 ? mappedGrants : this.db.documentGrants,
-        suggestions: mappedSuggestions.length > 0 ? mappedSuggestions : this.db.suggestions,
+        documentGrants: mappedGrants,
+        suggestions: mappedSuggestions,
         ideas: mappedIdeas,
         notifications: mappedNotifications,
       });
@@ -1538,9 +1600,28 @@ class WorkspaceRepository {
     }
   }
 
-  // Suggestions Center (Shared with all workspace members)
-  getSuggestions(_forUserId?: string): Suggestion[] {
-    return this.db.suggestions.map((s) => ({
+  // Suggestions Center (Shared with authorized workspace and project members)
+  getSuggestions(forUserId?: string): Suggestion[] {
+    const actor = forUserId ? this.getProfileById(forUserId) : undefined;
+    const isSuperAdmin =
+      actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+
+    let list = this.db.suggestions;
+    if (forUserId && !isSuperAdmin) {
+      const userProjectIds = new Set(
+        this.db.projectMembers.filter((pm) => pm.userId === forUserId).map((pm) => pm.projectId)
+      );
+      list = list.filter((s) => {
+        // Submitter can always view
+        if (s.submitterId === forUserId) return true;
+        // General workspace suggestion (no project_id)
+        if (!s.projectId) return true;
+        // Project-specific suggestion: only if user has access to that project
+        return userProjectIds.has(s.projectId);
+      });
+    }
+
+    return list.map((s) => ({
       ...s,
       submitter: this.getProfileById(s.submitterId),
     }));
@@ -1610,6 +1691,69 @@ class WorkspaceRepository {
     return { ...newSug, submitter };
   }
 
+  /**
+   * Safe submitter update: allows submitter to update title/description while in 'submitted' status.
+   * Strictly prevents altering protected columns (status, adminNotes, adminResponse, convertedTaskId).
+   */
+  updateSuggestion(
+    suggestionId: string,
+    updates: Partial<Pick<Suggestion, 'title' | 'description' | 'category' | 'projectId'>>,
+    actorId: string
+  ): Suggestion {
+    const sug = this.db.suggestions.find((s) => s.id === suggestionId);
+    if (!sug) throw new Error('Suggestion not found.');
+
+    const actor = this.getProfileById(actorId);
+    const isSuperAdmin =
+      actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+
+    if (!isSuperAdmin) {
+      if (sug.submitterId !== actorId) {
+        throw new Error('Unauthorized: You can only edit your own suggestions.');
+      }
+      if (sug.status !== 'submitted') {
+        throw new Error('Cannot edit suggestion once administrative review has commenced.');
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updated = this.db.suggestions.map((s) =>
+      s.id === suggestionId
+        ? {
+            ...s,
+            title: updates.title !== undefined ? updates.title : s.title,
+            description: updates.description !== undefined ? updates.description : s.description,
+            category: updates.category !== undefined ? updates.category : s.category,
+            projectId: updates.projectId !== undefined ? updates.projectId : s.projectId,
+            updatedAt: now,
+          }
+        : s
+    );
+
+    this.saveDatabase({
+      ...this.db,
+      suggestions: updated,
+    });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const dbPayload: Record<string, any> = { updated_at: now };
+      if (updates.title !== undefined) dbPayload.title = updates.title;
+      if (updates.description !== undefined) dbPayload.description = updates.description;
+      if (updates.category !== undefined) dbPayload.category = updates.category;
+      if (updates.projectId !== undefined) {
+        dbPayload.project_id = updates.projectId && isValidUuid(updates.projectId) ? updates.projectId : null;
+      }
+
+      Promise.resolve(
+        supabase.from('suggestions').update(dbPayload).eq('id', suggestionId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync suggestion update to Supabase', e));
+    }
+
+    const res = updated.find((s) => s.id === suggestionId)!;
+    return { ...res, submitter: this.getProfileById(res.submitterId) };
+  }
+
   updateSuggestionStatus(
     suggestionId: string,
     status: Suggestion['status'],
@@ -1619,6 +1763,15 @@ class WorkspaceRepository {
   ) {
     const sug = this.db.suggestions.find((s) => s.id === suggestionId);
     if (!sug) return;
+
+    if (actorId) {
+      const actor = this.getProfileById(actorId);
+      const isSuperAdmin =
+        actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+      if (!isSuperAdmin) {
+        throw new Error('Unauthorized: Only Super Admin can modify administrative suggestion status.');
+      }
+    }
 
     const now = new Date().toISOString();
     const notifId = generateUuid();

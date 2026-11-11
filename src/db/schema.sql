@@ -782,29 +782,96 @@ CREATE POLICY doc_grants_delete ON public.document_access_grants
     )
   );
 
--- 6.9 Suggestions Policies (Collaborative Workspace Suggestions)
+-- 6.9 Suggestions Policies (Collaborative Workspace Suggestions with Project Compartmentalization)
 DROP POLICY IF EXISTS suggestions_select ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_insert ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_admin_update ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_update ON public.suggestions;
+DROP POLICY IF EXISTS suggestions_submitter_update ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_delete ON public.suggestions;
 
+-- General suggestions visible to all workspace members; project-scoped suggestions visible only to project members
 CREATE POLICY suggestions_select ON public.suggestions
   FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    public.is_super_admin()
+    OR submitter_id = auth.uid()
+    OR (project_id IS NULL AND EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid()))
+    OR (project_id IS NOT NULL AND public.has_project_access(project_id))
+  );
 
 CREATE POLICY suggestions_insert ON public.suggestions
   FOR INSERT TO authenticated
-  WITH CHECK (submitter_id = auth.uid());
+  WITH CHECK (
+    submitter_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid())
+    AND (project_id IS NULL OR public.has_project_access(project_id))
+  );
 
-CREATE POLICY suggestions_update ON public.suggestions
+CREATE POLICY suggestions_admin_update ON public.suggestions
   FOR UPDATE TO authenticated
-  USING (public.is_super_admin() OR submitter_id = auth.uid())
-  WITH CHECK (public.is_super_admin() OR submitter_id = auth.uid());
+  USING (public.is_super_admin())
+  WITH CHECK (public.is_super_admin());
+
+CREATE POLICY suggestions_submitter_update ON public.suggestions
+  FOR UPDATE TO authenticated
+  USING (submitter_id = auth.uid() AND status = 'submitted')
+  WITH CHECK (submitter_id = auth.uid() AND status = 'submitted');
 
 CREATE POLICY suggestions_delete ON public.suggestions
   FOR DELETE TO authenticated
-  USING (submitter_id = auth.uid() OR public.is_super_admin());
+  USING (public.is_super_admin() OR (submitter_id = auth.uid() AND status = 'submitted'));
+
+-- Trigger to block submitters from modifying protected/administrative columns
+CREATE OR REPLACE FUNCTION public.enforce_suggestion_update_rules()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF public.is_super_admin() THEN
+    NEW.updated_at := timezone('utc'::text, now());
+    RETURN NEW;
+  END IF;
+
+  IF auth.uid() != OLD.submitter_id THEN
+    RAISE EXCEPTION 'Unauthorized: You can only edit your own suggestions.';
+  END IF;
+
+  IF OLD.status != 'submitted' THEN
+    RAISE EXCEPTION 'Cannot edit suggestion once administrative review has commenced.';
+  END IF;
+
+  IF NEW.status != OLD.status THEN
+    RAISE EXCEPTION 'Unauthorized: Submitter cannot alter suggestion status.';
+  END IF;
+
+  IF NEW.admin_notes IS DISTINCT FROM OLD.admin_notes THEN
+    RAISE EXCEPTION 'Unauthorized: Submitter cannot alter administrative notes.';
+  END IF;
+
+  IF NEW.admin_response IS DISTINCT FROM OLD.admin_response THEN
+    RAISE EXCEPTION 'Unauthorized: Submitter cannot alter administrative response.';
+  END IF;
+
+  IF NEW.converted_task_id IS DISTINCT FROM OLD.converted_task_id THEN
+    RAISE EXCEPTION 'Unauthorized: Submitter cannot convert suggestion to task.';
+  END IF;
+
+  IF NEW.submitter_id != OLD.submitter_id THEN
+    RAISE EXCEPTION 'Unauthorized: Suggestion submitter cannot be changed.';
+  END IF;
+
+  NEW.updated_at := timezone('utc'::text, now());
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_enforce_suggestion_update_rules ON public.suggestions;
+CREATE TRIGGER trg_enforce_suggestion_update_rules
+  BEFORE UPDATE ON public.suggestions
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_suggestion_update_rules();
 
 -- 6.10 Personal Ideas Policies (Strict User Isolation)
 DROP POLICY IF EXISTS ideas_owner_select ON public.ideas;

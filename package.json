@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "npx tsx scripts/test-invitations.ts && npx tsx scripts/test-day3-fixes.ts && npx tsx scripts/test-persistence-and-sync.ts && npx tsx scripts/test-multiuser-realtime.ts"
+    "test": "npx tsx scripts/test-invitations.ts && npx tsx scripts/test-day3-fixes.ts && npx tsx scripts/test-persistence-and-sync.ts && npx tsx scripts/test-multiuser-realtime.ts && npx tsx scripts/test-remediation-and-security.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
