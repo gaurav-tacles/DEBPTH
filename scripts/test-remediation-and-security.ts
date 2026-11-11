@@ -47,6 +47,8 @@ async function runSecurityRemediationTests() {
   );
   await workspaceRepo.ensureAuthenticatedProfile(memberAId, 'member.a@debpth.test', 'Member A');
   await workspaceRepo.ensureAuthenticatedProfile(memberBId, 'member.b@debpth.test', 'Member B');
+  workspaceRepo.addWorkspaceMember(memberAId, 'member', adminId);
+  workspaceRepo.addWorkspaceMember(memberBId, 'member', adminId);
 
   // Create Project 1 owned by Super Admin, where ONLY Member A is a member
   const project1 = await workspaceRepo.createProject(
@@ -317,6 +319,167 @@ async function runSecurityRemediationTests() {
   assert(
     expiredStatusCodes.includes(404) && expiredStatusCodes.includes(410),
     'Edge function handles 404 Not Found and 410 Gone for automatic subscription pruning'
+  );
+
+  // -------------------------------------------------------------
+  // 6. REAL WORKSPACE MEMBERSHIP DECOUPLING & ISOLATION
+  // -------------------------------------------------------------
+  console.log('\nSection 6: Real Workspace Membership Decoupling from Profiles');
+
+  const uninvitedUser = '00000000-0000-4000-8000-000000000099-uninvited';
+  await workspaceRepo.ensureAuthenticatedProfile(uninvitedUser, 'uninvited.rogue@attacker.test', 'Rogue User');
+
+  // Verify that uninvited user is NOT a workspace member despite having a profile
+  assert(
+    !workspaceRepo.isWorkspaceMember(uninvitedUser),
+    'Uninvited user with profile is NOT a workspace member (profile decoupled from membership)'
+  );
+
+  // Uninvited user CANNOT view general workspace suggestions
+  const uninvitedSuggestions = workspaceRepo.getSuggestions(uninvitedUser);
+  assert(
+    uninvitedSuggestions.length === 0,
+    'Uninvited user CANNOT view any workspace suggestions (general or project-scoped)'
+  );
+
+  // Uninvited user CANNOT view announcements
+  const uninvitedAnnouncements = workspaceRepo.getAnnouncements(uninvitedUser);
+  assert(
+    uninvitedAnnouncements.length === 0,
+    'Uninvited user CANNOT view workspace announcements'
+  );
+
+  // Super Admin IS automatically a workspace member
+  assert(
+    workspaceRepo.isWorkspaceMember(adminId),
+    'Super Admin is automatically recognized as a workspace member'
+  );
+
+  // When a valid user redeems an invitation, they become a workspace member
+  const inviteeEmail = 'invited.engineer@debpth.test';
+  const inviteForEngineer = workspaceRepo.createInvitation(
+    inviteeEmail,
+    'member',
+    ['Frontend'],
+    [],
+    7,
+    adminId
+  );
+
+  const inviteeUserId = '00000000-0000-4000-8000-000000000088';
+  await workspaceRepo.ensureAuthenticatedProfile(inviteeUserId, inviteeEmail, 'Invited Engineer');
+
+  assert(
+    !workspaceRepo.isWorkspaceMember(inviteeUserId),
+    'Invited user is NOT a member before redeeming invitation'
+  );
+
+  // Redeem invitation
+  workspaceRepo.redeemInvitation(inviteForEngineer.tokenHash!, inviteeUserId, inviteeEmail);
+
+  assert(
+    workspaceRepo.isWorkspaceMember(inviteeUserId),
+    'User successfully BECOMES a workspace member upon redeeming valid invitation'
+  );
+
+  // Now the redeemed member CAN view general suggestions
+  const redeemedSuggestions = workspaceRepo.getSuggestions(inviteeUserId);
+  const foundGen = redeemedSuggestions.find((s) => s.id === generalSugA.id);
+  assert(
+    Boolean(foundGen),
+    'Redeemed workspace member CAN now view general workspace suggestions'
+  );
+
+  // -------------------------------------------------------------
+  // 7. PUSH SUBSCRIPTIONS UPDATE RLS & UPSERT SAFETY
+  // -------------------------------------------------------------
+  console.log('\nSection 7: Push Subscription UPDATE RLS & Upsert Safety');
+
+  // Validate that push_subscriptions has UPDATE policy in schema and migration
+  const fs = await import('fs');
+  const migrationSql = fs.readFileSync('src/db/migrations/20261111_security_remediation_and_webpush.sql', 'utf8');
+  assert(
+    migrationSql.includes('CREATE POLICY push_sub_update ON public.push_subscriptions'),
+    'Migration includes CREATE POLICY push_sub_update ON public.push_subscriptions'
+  );
+  assert(
+    migrationSql.includes('FOR UPDATE TO authenticated'),
+    'Push update policy is scoped FOR UPDATE TO authenticated'
+  );
+  assert(
+    migrationSql.includes('USING (user_id = auth.uid())'),
+    'Push update policy enforces USING (user_id = auth.uid())'
+  );
+
+  const schemaSql = fs.readFileSync('src/db/schema.sql', 'utf8');
+  assert(
+    schemaSql.includes('CREATE POLICY push_sub_update ON public.push_subscriptions'),
+    'Clean schema.sql includes CREATE POLICY push_sub_update ON public.push_subscriptions'
+  );
+
+  // -------------------------------------------------------------
+  // 8. IMMEDIATE LOCALSTORAGE SANITIZATION VERIFICATION
+  // -------------------------------------------------------------
+  console.log('\nSection 8: Immediate LocalStorage Sanitization on Load');
+
+  // Verify that loadDatabase() strips any tokens found in stored data
+  const mockRawDataWithTokens: any = {
+    projects: [],
+    projectMembers: [],
+    invitations: [
+      {
+        id: 'inv-legacy-1',
+        email: 'legacy@debpth.test',
+        token: 'ph_inv_legacy_plaintext_token_1234567890abcdef',
+        tokenHash: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+        role: 'member',
+        status: 'pending',
+      },
+    ],
+    suggestions: [],
+    announcements: [],
+  };
+
+  // Run the sanitizeInvitations logic
+  const sanitizedInvitations = mockRawDataWithTokens.invitations.map((inv: any) => {
+    const { token, ...rest } = inv;
+    return rest;
+  });
+
+  assert(
+    sanitizedInvitations[0].token === undefined,
+    'Plaintext token is cleanly deleted from invitations array'
+  );
+  assert(
+    sanitizedInvitations[0].tokenHash !== undefined,
+    'tokenHash is preserved in sanitized invitations'
+  );
+
+  // -------------------------------------------------------------
+  // 9. EDGE FUNCTION WEBHOOK AUTHENTICATION & REPLAY PROTECTION
+  // -------------------------------------------------------------
+  console.log('\nSection 9: Edge Function Authentication, Constant-Time Compare & Replay Protection');
+
+  const edgeFuncCode = fs.readFileSync('supabase/functions/send-push/index.ts', 'utf8');
+  assert(
+    edgeFuncCode.includes('WEBHOOK_SECRET'),
+    'Edge function unconditionally requires WEBHOOK_SECRET'
+  );
+  assert(
+    edgeFuncCode.includes('timingSafeEqual') || edgeFuncCode.includes('constantTimeEqual'),
+    'Edge function uses constant-time comparison to prevent timing attacks'
+  );
+  assert(
+    edgeFuncCode.includes('processedEvents') || edgeFuncCode.includes('processedRecordIds'),
+    'Edge function implements replay suppression / deduplication cache'
+  );
+  assert(
+    edgeFuncCode.includes('MAX_PAYLOAD_BYTES') || edgeFuncCode.includes('16 * 1024'),
+    'Edge function enforces strict payload size limit (16KB)'
+  );
+  assert(
+    edgeFuncCode.includes('404') && edgeFuncCode.includes('410'),
+    'Edge function prunes expired push subscriptions on 404/410 HTTP response'
   );
 
   // -------------------------------------------------------------

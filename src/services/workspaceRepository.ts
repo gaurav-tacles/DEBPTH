@@ -2,6 +2,7 @@ import {
   UserProfile,
   Project,
   ProjectMember,
+  WorkspaceMember,
   Invitation,
   Task,
   Milestone,
@@ -23,6 +24,7 @@ const STORAGE_KEY_DATA = 'projecthub_workspace_v3';
 
 interface WorkspaceDatabase {
   profiles: UserProfile[];
+  workspaceMembers: WorkspaceMember[];
   projects: Project[];
   projectMembers: ProjectMember[];
   invitations: Invitation[];
@@ -41,6 +43,7 @@ function getInitialDatabase(): WorkspaceDatabase {
   // Production-clean: No fictional members, fake projects, or mock telemetry
   return {
     profiles: [],
+    workspaceMembers: [],
     projects: [],
     projectMembers: [],
     invitations: [],
@@ -71,15 +74,27 @@ class WorkspaceRepository {
           const parsed = JSON.parse(stored);
           if (parsed && Array.isArray(parsed.profiles) && Array.isArray(parsed.projects)) {
             if (!Array.isArray(parsed.ideas)) parsed.ideas = [];
+            if (!Array.isArray(parsed.workspaceMembers)) parsed.workspaceMembers = [];
             // Security: Sanitize existing stored invitations to eliminate legacy plaintext tokens
+            let hadLegacyTokens = false;
             if (Array.isArray(parsed.invitations)) {
               parsed.invitations = parsed.invitations.map((inv: any) => {
                 if (inv && typeof inv === 'object' && 'token' in inv) {
+                  hadLegacyTokens = true;
                   const { token: _rawToken, ...safeInv } = inv;
                   return safeInv;
                 }
                 return inv;
               });
+            }
+            // If plaintext tokens were discovered, immediately persist the sanitized version to storage
+            if (hadLegacyTokens) {
+              try {
+                localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(parsed));
+                logger.info('WorkspaceRepository', 'Sanitized legacy plaintext tokens from localStorage');
+              } catch (writeErr) {
+                logger.warn('WorkspaceRepository', 'Could not immediately rewrite sanitized cache to localStorage', writeErr);
+              }
             }
             return parsed;
           }
@@ -98,6 +113,7 @@ class WorkspaceRepository {
       // Security: Ensure raw plaintext invitation tokens are NEVER persisted to localStorage or persistent repository state
       const sanitizedData: WorkspaceDatabase = {
         ...data,
+        workspaceMembers: data.workspaceMembers || [],
         invitations: (data.invitations || []).map((inv) => {
           if (inv && typeof inv === 'object' && 'token' in inv) {
             const { token: _rawToken, ...safeInv } = inv;
@@ -133,6 +149,43 @@ class WorkspaceRepository {
     this.saveDatabase({
       ...this.db,
       ...partial,
+    });
+  }
+
+  // Workspace Members
+  isWorkspaceMember(userId?: string): boolean {
+    if (!userId) return false;
+    const user = this.getProfileById(userId);
+    if (user?.role === 'super_admin' || user?.email.toLowerCase() === 'realgauravpatel@gmail.com') {
+      return true;
+    }
+    return (this.db.workspaceMembers || []).some((wm) => wm.userId === userId);
+  }
+
+  getWorkspaceMembers(): WorkspaceMember[] {
+    return (this.db.workspaceMembers || []).map((wm) => ({
+      ...wm,
+      user: this.getProfileById(wm.userId),
+    }));
+  }
+
+  addWorkspaceMember(
+    userId: string,
+    role: 'super_admin' | 'member' = 'member',
+    invitedBy?: string
+  ): void {
+    if ((this.db.workspaceMembers || []).some((wm) => wm.userId === userId)) {
+      return;
+    }
+    const newMember: WorkspaceMember = {
+      userId,
+      role,
+      joinedAt: new Date().toISOString(),
+      invitedBy,
+    };
+    this.saveDatabase({
+      ...this.db,
+      workspaceMembers: [...(this.db.workspaceMembers || []), newMember],
     });
   }
 
@@ -215,9 +268,15 @@ class WorkspaceRepository {
     };
 
     // Save to local
+    const updatedMembers =
+      isSuperAdminEmail && !(this.db.workspaceMembers || []).some((wm) => wm.userId === userId)
+        ? [...(this.db.workspaceMembers || []), { userId, role: 'super_admin' as const, joinedAt: new Date().toISOString() }]
+        : this.db.workspaceMembers;
+
     this.saveDatabase({
       ...this.db,
       profiles: [...this.db.profiles, newProfile],
+      workspaceMembers: updatedMembers,
     });
 
     // Save to Supabase if connected
@@ -1159,7 +1218,7 @@ class WorkspaceRepository {
     };
   }
 
-  redeemInvitation(tokenOrHash: string, fullName: string, expectedEmail?: string): UserProfile {
+  redeemInvitation(tokenOrHash: string, fullName: string, expectedEmail?: string, explicitUserId?: string): UserProfile {
     const cleanToken = tokenOrHash.trim();
     const computedHash = hashTokenSync(cleanToken);
 
@@ -1182,11 +1241,17 @@ class WorkspaceRepository {
       throw new Error(`This invitation was issued to ${inv.email}. Please sign in with the matching email address.`);
     }
 
-    const newUserId = `user-${Date.now()}`;
-    const newProfile: UserProfile = {
-      id: newUserId,
+    const existingProfile = this.db.profiles.find((p) => p.email.toLowerCase() === inv.email.toLowerCase());
+    const targetUserId = explicitUserId || existingProfile?.id || (isValidUuid(fullName) ? fullName : `user-${Date.now()}`);
+    const resolvedFullName = existingProfile?.fullName || (isValidUuid(fullName) ? inv.email.split('@')[0] : fullName.trim());
+
+    const newProfile: UserProfile = existingProfile ? {
+      ...existingProfile,
+      lastActiveAt: new Date().toISOString(),
+    } : {
+      id: targetUserId,
       email: inv.email,
-      fullName: fullName.trim(),
+      fullName: resolvedFullName,
       role: inv.email.toLowerCase() === 'realgauravpatel@gmail.com' ? 'super_admin' : 'member',
       labels: inv.initialLabels && inv.initialLabels.length > 0 ? inv.initialLabels : ['Developer'],
       mfaEnabled: true,
@@ -1195,14 +1260,14 @@ class WorkspaceRepository {
     };
 
     const updatedInvitations = this.db.invitations.map((i) =>
-      i.id === inv.id ? { ...i, acceptedAt: new Date().toISOString(), status: 'accepted' as const } : i
+      i.id === inv.id ? { ...i, acceptedAt: new Date().toISOString(), acceptedBy: targetUserId, status: 'accepted' as const } : i
     );
 
     const projectRole: ProjectRole = inv.invitedProjectRole || 'collaborator';
     const newProjectMembers: ProjectMember[] = (inv.assignedProjectIds || []).map((projId) => ({
       id: `pm-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       projectId: projId,
-      userId: newUserId,
+      userId: targetUserId,
       role: projectRole,
       permissions: {
         canManageTasks: projectRole !== 'viewer',
@@ -1213,9 +1278,26 @@ class WorkspaceRepository {
       joinedAt: new Date().toISOString(),
     }));
 
+    const newWorkspaceMember: WorkspaceMember = {
+      userId: targetUserId,
+      role: inv.email.toLowerCase() === 'realgauravpatel@gmail.com' ? 'super_admin' : 'member',
+      joinedAt: new Date().toISOString(),
+      invitedBy: inv.invitedBy,
+    };
+
+    const updatedProfiles = existingProfile
+      ? this.db.profiles.map((p) => (p.id === existingProfile.id ? newProfile : p))
+      : [...this.db.profiles, newProfile];
+
+    const updatedWorkspaceMembers = [
+      ...(this.db.workspaceMembers || []).filter((wm) => wm.userId !== targetUserId),
+      newWorkspaceMember,
+    ];
+
     this.saveDatabase({
       ...this.db,
-      profiles: [...this.db.profiles, newProfile],
+      profiles: updatedProfiles,
+      workspaceMembers: updatedWorkspaceMembers,
       invitations: updatedInvitations,
       projectMembers: [...this.db.projectMembers, ...newProjectMembers],
     });
@@ -1605,16 +1687,27 @@ class WorkspaceRepository {
     const actor = forUserId ? this.getProfileById(forUserId) : undefined;
     const isSuperAdmin =
       actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+    const isMember = this.isWorkspaceMember(forUserId);
 
     let list = this.db.suggestions;
     if (forUserId && !isSuperAdmin) {
+      if (!isMember) {
+        // Non-members are restricted strictly to their own submissions (if any)
+        return list
+          .filter((s) => s.submitterId === forUserId)
+          .map((s) => ({
+            ...s,
+            submitter: this.getProfileById(s.submitterId),
+          }));
+      }
+
       const userProjectIds = new Set(
         this.db.projectMembers.filter((pm) => pm.userId === forUserId).map((pm) => pm.projectId)
       );
       list = list.filter((s) => {
         // Submitter can always view
         if (s.submitterId === forUserId) return true;
-        // General workspace suggestion (no project_id)
+        // General workspace suggestion (no project_id): visible to verified workspace members
         if (!s.projectId) return true;
         // Project-specific suggestion: only if user has access to that project
         return userProjectIds.has(s.projectId);
@@ -1628,6 +1721,10 @@ class WorkspaceRepository {
   }
 
   createSuggestion(data: Omit<Suggestion, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Suggestion {
+    if (!this.isWorkspaceMember(data.submitterId)) {
+      throw new Error('Unauthorized: Only verified workspace members can submit suggestions.');
+    }
+
     const newId = generateUuid();
     const now = new Date().toISOString();
     const newSug: Suggestion = {
@@ -1887,7 +1984,10 @@ class WorkspaceRepository {
   }
 
   // Announcements & Notifications
-  getAnnouncements(): Announcement[] {
+  getAnnouncements(forUserId?: string): Announcement[] {
+    if (forUserId && !this.isWorkspaceMember(forUserId)) {
+      return [];
+    }
     return [...this.db.announcements];
   }
 

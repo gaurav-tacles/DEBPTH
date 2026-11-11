@@ -373,16 +373,26 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       fullName: string,
       inviteToken?: string
     ): Promise<{ error: Error | null; emailConfirmationRequired?: boolean }> => {
+      const cleanEmail = email.trim().toLowerCase();
+      const isSuperAdminEmail = cleanEmail === 'realgauravpatel@gmail.com';
+
+      // Invitation-only enforcement: Non-admins MUST supply an invitation token
+      if (!isSuperAdminEmail && (!inviteToken || !inviteToken.trim())) {
+        return {
+          error: new Error('A valid invitation is required to register for this private workspace.'),
+        };
+      }
+
       const supabase = getSupabaseClient();
       if (supabase) {
         try {
           const { data, error } = await supabase.auth.signUp({
-            email: email.trim(),
+            email: cleanEmail,
             password,
             options: {
               data: {
-                full_name: fullName,
-                invite_token: inviteToken,
+                full_name: fullName.trim(),
+                invite_token: inviteToken?.trim(),
               },
             },
           });
@@ -390,26 +400,38 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           if (data.user) {
             const profile = await workspaceRepo.ensureAuthenticatedProfile(
               data.user.id,
-              data.user.email || email,
-              fullName
+              data.user.email || cleanEmail,
+              fullName.trim()
             );
+
             if (data.session) {
               setSession(data.session);
               setCurrentUserId(profile.id);
               setIsAuthenticated(true);
 
-              // Atomically redeem invitation in Supabase
-              if (inviteToken) {
-                try {
-                  await supabase.rpc('redeem_invitation_atomic', {
-                    p_token_hash: inviteToken.trim(),
-                    p_user_full_name: fullName.trim(),
-                  });
-                } catch (rpcErr) {
-                  logger.warn('WorkspaceContext', 'Could not redeem invitation via RPC on signUp', rpcErr);
+              // Atomically redeem invitation in Supabase - FAIL CLOSED ON FAILURE
+              if (inviteToken && inviteToken.trim()) {
+                const cleanInvite = inviteToken.trim();
+                const { error: rpcErr } = await supabase.rpc('redeem_invitation_atomic', {
+                  p_token_hash: cleanInvite,
+                  p_user_full_name: fullName.trim(),
+                });
+
+                if (rpcErr) {
+                  logger.error('WorkspaceContext', 'Invitation redemption failed on signUp', rpcErr);
+                  // Sign out of auth session since workspace invitation was invalid
+                  await supabase.auth.signOut().catch(() => {});
+                  workspaceRepo.clearCache();
+                  setSession(null);
+                  setCurrentUserId('');
+                  setIsAuthenticated(false);
+                  return {
+                    error: new Error(`Invitation verification failed: ${rpcErr.message || 'Invalid or expired invitation.'}`),
+                  };
                 }
+
                 try {
-                  workspaceRepo.redeemInvitation(inviteToken, fullName, email);
+                  workspaceRepo.redeemInvitation(cleanInvite, fullName.trim(), cleanEmail);
                 } catch (localErr) {
                   // already redeemed or only in remote
                 }
@@ -538,14 +560,14 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [isAuthenticated, tick]);
 
   const suggestions = useMemo(() => {
-    if (!isAuthenticated) return [];
-    return workspaceRepo.getSuggestions();
-  }, [isAuthenticated, tick]);
+    if (!isAuthenticated || !currentUserId) return [];
+    return workspaceRepo.getSuggestions(currentUserId);
+  }, [currentUserId, isAuthenticated, tick]);
 
   const announcements = useMemo(() => {
-    if (!isAuthenticated) return [];
-    return workspaceRepo.getAnnouncements();
-  }, [isAuthenticated, tick]);
+    if (!isAuthenticated || !currentUserId) return [];
+    return workspaceRepo.getAnnouncements(currentUserId);
+  }, [currentUserId, isAuthenticated, tick]);
 
   const notifications = useMemo(() => {
     if (!isAuthenticated || !currentUserId) return [];

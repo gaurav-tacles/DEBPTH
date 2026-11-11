@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
 CREATE INDEX IF NOT EXISTS idx_profiles_labels ON public.profiles USING GIN(labels);
 
+-- 3.1.1 WORKSPACE MEMBERS TABLE (Decouples profile existence from workspace membership)
+CREATE TABLE IF NOT EXISTS public.workspace_members (
+  user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'member',
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+  invited_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON public.workspace_members(user_id);
+
 -- 3.2 PROJECTS TABLE
 CREATE TABLE IF NOT EXISTS public.projects (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -311,6 +321,23 @@ AS $$
   );
 $$;
 
+-- 4.1.1 Check if caller is a verified Workspace Member
+CREATE OR REPLACE FUNCTION public.is_workspace_member(p_user_id UUID DEFAULT auth.uid())
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, auth
+STABLE
+AS $$
+  SELECT (
+    public.is_super_admin()
+    OR EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.user_id = COALESCE(p_user_id, auth.uid())
+    )
+  );
+$$;
+
 -- 4.2 Check if caller has access to project (Super Admin or project member)
 CREATE OR REPLACE FUNCTION public.has_project_access(proj_id UUID)
 RETURNS BOOLEAN
@@ -406,6 +433,13 @@ BEGIN
       END,
       last_active_at = NOW();
 
+  -- Super Admin is immediately provisioned as workspace member
+  IF LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN
+    INSERT INTO public.workspace_members (user_id, role, joined_at)
+    VALUES (NEW.id, 'super_admin', NOW())
+    ON CONFLICT (user_id) DO NOTHING;
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -491,6 +525,24 @@ CREATE POLICY profiles_insert_auth ON public.profiles
       OR (role = 'super_admin' AND LOWER(auth.jwt()->>'email') = 'realgauravpatel@gmail.com')
     )
   );
+
+-- 6.1.1 Workspace Members Policies
+ALTER TABLE public.workspace_members ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS wm_select ON public.workspace_members;
+CREATE POLICY wm_select ON public.workspace_members
+  FOR SELECT TO authenticated
+  USING (
+    public.is_super_admin()
+    OR user_id = auth.uid()
+    OR public.is_workspace_member()
+  );
+
+DROP POLICY IF EXISTS wm_admin ON public.workspace_members;
+CREATE POLICY wm_admin ON public.workspace_members
+  FOR ALL TO authenticated
+  USING (public.is_super_admin())
+  WITH CHECK (public.is_super_admin());
 
 -- 6.2 Projects Policies
 DROP POLICY IF EXISTS projects_select ON public.projects;
@@ -796,7 +848,7 @@ CREATE POLICY suggestions_select ON public.suggestions
   USING (
     public.is_super_admin()
     OR submitter_id = auth.uid()
-    OR (project_id IS NULL AND EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid()))
+    OR (project_id IS NULL AND public.is_workspace_member())
     OR (project_id IS NOT NULL AND public.has_project_access(project_id))
   );
 
@@ -804,7 +856,7 @@ CREATE POLICY suggestions_insert ON public.suggestions
   FOR INSERT TO authenticated
   WITH CHECK (
     submitter_id = auth.uid()
-    AND EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid())
+    AND public.is_workspace_member()
     AND (project_id IS NULL OR public.has_project_access(project_id))
   );
 
@@ -902,7 +954,7 @@ DROP POLICY IF EXISTS announcements_admin ON public.announcements;
 
 CREATE POLICY announcements_select ON public.announcements
   FOR SELECT TO authenticated
-  USING (true);
+  USING (public.is_workspace_member());
 
 CREATE POLICY announcements_admin ON public.announcements
   FOR ALL TO authenticated
@@ -951,6 +1003,7 @@ ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS push_sub_select ON public.push_subscriptions;
 DROP POLICY IF EXISTS push_sub_insert ON public.push_subscriptions;
+DROP POLICY IF EXISTS push_sub_update ON public.push_subscriptions;
 DROP POLICY IF EXISTS push_sub_delete ON public.push_subscriptions;
 
 CREATE POLICY push_sub_select ON public.push_subscriptions
@@ -959,6 +1012,11 @@ CREATE POLICY push_sub_select ON public.push_subscriptions
 
 CREATE POLICY push_sub_insert ON public.push_subscriptions
   FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY push_sub_update ON public.push_subscriptions
+  FOR UPDATE TO authenticated
+  USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
 
 CREATE POLICY push_sub_delete ON public.push_subscriptions
@@ -1457,6 +1515,20 @@ BEGIN
       labels = array_cat(profiles.labels, EXCLUDED.labels),
       last_active_at = now();
 
+  -- Register user as a verified workspace member
+  INSERT INTO public.workspace_members (user_id, role, joined_at, invited_by)
+  VALUES (
+    v_caller_id,
+    CASE 
+      WHEN LOWER(v_inv.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'
+      ELSE COALESCE(v_inv.role::text, 'member')
+    END,
+    now(),
+    v_inv.invited_by
+  )
+  ON CONFLICT (user_id) DO UPDATE
+  SET role = EXCLUDED.role;
+
   -- 8. Scope-Specific Membership Granting
   IF v_inv.scope = 'workspace' THEN
     IF v_inv.assigned_project_ids IS NOT NULL AND v_inv.assigned_project_ids != '{}' THEN
@@ -1717,6 +1789,7 @@ $$;
 
 -- Revoke default PUBLIC execution from all SECURITY DEFINER functions
 REVOKE ALL ON FUNCTION public.is_super_admin() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_workspace_member(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.has_project_access(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.can_manage_project_members(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.can_invite_to_project(UUID) FROM PUBLIC;
@@ -1741,6 +1814,7 @@ END $$;
 
 -- 1. Helper security functions used in RLS policies:
 GRANT EXECUTE ON FUNCTION public.is_super_admin() TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.is_workspace_member(UUID) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.has_project_access(UUID) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.can_manage_project_members(UUID) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.can_invite_to_project(UUID) TO authenticated, service_role;

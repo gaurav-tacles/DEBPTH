@@ -37,6 +37,14 @@ export interface ProjectMember {
   user?: UserProfile;
 }
 
+export interface WorkspaceMember {
+  userId: string;
+  role: UserRole;
+  joinedAt: string;
+  invitedBy?: string;
+  user?: UserProfile;
+}
+
 export interface ProjectRepository {
   name: string; // e.g. "owner/repo"
   branch: string;

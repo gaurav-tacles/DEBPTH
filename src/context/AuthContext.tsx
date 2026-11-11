@@ -233,10 +233,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(true);
 
       try {
-        // If invitation token provided, redeem it and verify matching email
-        if (inviteToken) {
+        const cleanEmail = email.trim().toLowerCase();
+        const isSuperAdminEmail = cleanEmail === 'realgauravpatel@gmail.com';
+
+        // Invitation-only enforcement: Non-admins MUST supply an invitation token
+        if (!isSuperAdminEmail && (!inviteToken || !inviteToken.trim())) {
+          const msg = 'A valid invitation is required to register for this private workspace.';
+          setError(msg);
+          setIsLoading(false);
+          return { success: false, error: msg };
+        }
+
+        // If invitation token provided, verify local redemption first
+        if (inviteToken && inviteToken.trim()) {
           try {
-            workspaceRepo.redeemInvitation(inviteToken, fullName, email.trim().toLowerCase());
+            workspaceRepo.redeemInvitation(inviteToken.trim(), fullName, cleanEmail);
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : 'Invalid invitation token.';
             setError(msg);
@@ -249,10 +260,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (supabase) {
           const { data, error: signUpError } = await supabase.auth.signUp({
-            email: email.trim().toLowerCase(),
+            email: cleanEmail,
             password,
             options: {
-              data: { full_name: fullName.trim() },
+              data: {
+                full_name: fullName.trim(),
+                invite_token: inviteToken?.trim(),
+              },
             },
           });
 
@@ -266,9 +280,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setUser(data.user);
             setSession(data.session);
 
+            // If session was established and inviteToken exists, redeem atomically in Supabase
+            if (data.session && inviteToken && inviteToken.trim()) {
+              const { error: rpcErr } = await supabase.rpc('redeem_invitation_atomic', {
+                p_token_hash: inviteToken.trim(),
+                p_user_full_name: fullName.trim(),
+              });
+
+              if (rpcErr) {
+                await supabase.auth.signOut().catch(() => {});
+                setError(rpcErr.message || 'Invitation redemption failed');
+                setIsLoading(false);
+                return { success: false, error: rpcErr.message || 'Invitation redemption failed' };
+              }
+            }
+
             const prof = await workspaceRepo.ensureAuthenticatedProfile(
               data.user.id,
-              data.user.email || email,
+              data.user.email || cleanEmail,
               fullName.trim(),
               undefined
             );

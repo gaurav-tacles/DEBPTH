@@ -1,6 +1,6 @@
 // Supabase Edge Function: send-push
-// Production-ready, zero-cost Native Web Push sender for DEBPTH
-// Triggered either via Database Webhook on public.notifications INSERT or direct backend invocation.
+// Production-hardened, zero-cost Native Web Push sender for DEBPTH
+// Triggered strictly via Database Webhook on public.notifications INSERT or authenticated Service Role backend dispatch.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import webpush from "npm:web-push@3.6.7";
@@ -20,7 +20,7 @@ interface WebhookPayload {
   table?: string;
   schema?: string;
   record?: WebhookRecord;
-  // Direct dispatch payload
+  // Direct admin dispatch payload (requires SUPABASE_SERVICE_ROLE_KEY)
   recipient_id?: string;
   notification?: {
     title: string;
@@ -42,9 +42,40 @@ interface PushSubscriptionRow {
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-webhook-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+// Replay & duplicate event cache (in-memory deduplication window)
+const PROCESSED_CACHE_MAX = 1000;
+const processedEvents = new Map<string, number>();
+
+function isDuplicateEvent(eventId: string): boolean {
+  const now = Date.now();
+  // Evict entries older than 10 minutes
+  if (processedEvents.size > PROCESSED_CACHE_MAX) {
+    for (const [id, ts] of processedEvents.entries()) {
+      if (now - ts > 10 * 60 * 1000) {
+        processedEvents.delete(id);
+      }
+    }
+  }
+
+  if (processedEvents.has(eventId)) {
+    return true;
+  }
+  processedEvents.set(eventId, now);
+  return false;
+}
+
+// Timing-safe constant-time string comparison using Web Crypto API
+async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const aBuf = encoder.encode(a);
+  const bBuf = encoder.encode(b);
+  if (aBuf.byteLength !== bBuf.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(aBuf, bBuf);
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -58,6 +89,16 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  // Reject oversized requests (> 16 KB)
+  const MAX_PAYLOAD_BYTES = 16 * 1024;
+  const contentLength = req.headers.get("content-length");
+  if (contentLength && parseInt(contentLength, 10) > MAX_PAYLOAD_BYTES) {
+    return new Response(JSON.stringify({ error: "Payload too large" }), {
+      status: 413,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -67,8 +108,17 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("VAPID_SUBJECT") || "mailto:admin@debpth.vercel.app";
     const webhookSecret = Deno.env.get("WEBHOOK_SECRET");
 
+    // CRITICAL: Unconditional secret requirement - fail closed if not configured
+    if (!webhookSecret) {
+      console.error("[send-push] Fatal: WEBHOOK_SECRET is not configured in Supabase environment.");
+      return new Response(
+        JSON.stringify({ error: "Server configuration missing: Webhook secret required" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     if (!supabaseUrl || !supabaseServiceKey) {
-      console.error("[send-push] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY configuration.");
+      console.error("[send-push] Fatal: Missing Supabase service role credentials.");
       return new Response(
         JSON.stringify({ error: "Server configuration missing: Supabase service role" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -76,26 +126,43 @@ Deno.serve(async (req: Request) => {
     }
 
     if (!vapidPublicKey || !vapidPrivateKey) {
-      console.error("[send-push] Missing VAPID keys in environment variables (VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY).");
+      console.error("[send-push] Fatal: Missing VAPID keys in environment.");
       return new Response(
         JSON.stringify({ error: "Server configuration missing: VAPID keys required" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Optional webhook secret validation if configured
-    if (webhookSecret) {
-      const authHeader = req.headers.get("authorization") || req.headers.get("x-webhook-secret");
-      const token = authHeader?.replace(/^Bearer\s+/i, "");
-      if (token !== webhookSecret && token !== supabaseServiceKey) {
-        return new Response(
-          JSON.stringify({ error: "Unauthorized webhook request" }),
-          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
+    // Authenticate caller unconditionally
+    const rawHeader = req.headers.get("authorization") || req.headers.get("x-webhook-secret");
+    if (!rawHeader) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized: Missing authorization header" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const payload: WebhookPayload = await req.json();
+    const token = rawHeader.replace(/^Bearer\s+/i, "").trim();
+
+    const isWebhookAuth = await timingSafeEqual(token, webhookSecret);
+    const isServiceRoleAuth = await timingSafeEqual(token, supabaseServiceKey);
+
+    if (!isWebhookAuth && !isServiceRoleAuth) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized: Invalid authentication credentials" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    let payload: WebhookPayload;
+    try {
+      payload = await req.json();
+    } catch {
+      return new Response(
+        JSON.stringify({ error: "Malformed request: Valid JSON payload required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     let recipientId = "";
     let pushPayload = {
@@ -107,31 +174,74 @@ Deno.serve(async (req: Request) => {
       tag: "debpth-notification",
     };
 
-    // 1. Check if incoming request is a Postgres Database Webhook payload
-    if (payload.record && payload.record.recipient_id) {
-      recipientId = payload.record.recipient_id;
+    // Strict schema & pathway validation
+    if (payload.record && typeof payload.record === "object") {
+      // Pathway 1: Database Webhook on public.notifications INSERT
+      if (payload.type && payload.type !== "INSERT") {
+        return new Response(
+          JSON.stringify({ error: "Unsupported event type: Only INSERT events are handled" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      if (payload.table && payload.table !== "notifications") {
+        return new Response(
+          JSON.stringify({ error: "Unsupported table: Only notifications table is handled" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      if (payload.schema && payload.schema !== "public") {
+        return new Response(
+          JSON.stringify({ error: "Unsupported schema: Only public schema is handled" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const rec = payload.record;
+      if (!rec.id || typeof rec.id !== "string" || !rec.recipient_id || typeof rec.recipient_id !== "string") {
+        return new Response(
+          JSON.stringify({ error: "Malformed notification record: id and recipient_id required" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Replay / duplicate event suppression
+      if (isDuplicateEvent(rec.id)) {
+        return new Response(
+          JSON.stringify({ success: true, message: "Duplicate notification event suppressed", delivered: 0 }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      recipientId = rec.recipient_id;
       pushPayload = {
-        title: payload.record.title || "DEBPTH Workspace",
-        body: payload.record.body || "New activity in your workspace.",
-        url: payload.record.link || "/",
+        title: (rec.title || "DEBPTH Workspace").slice(0, 120),
+        body: (rec.body || "New activity in your workspace.").slice(0, 500),
+        url: rec.link && rec.link.startsWith("/") ? rec.link : "/",
         icon: "/pwa-192x192.png",
         badge: "/icon.svg",
-        tag: `debpth-${payload.record.type || "notification"}-${payload.record.id}`,
+        tag: `debpth-${rec.type || "notification"}-${rec.id}`,
       };
     } else if (payload.recipient_id && payload.notification) {
-      // 2. Direct dispatch payload
+      // Pathway 2: Direct dispatch (Permitted ONLY for authenticated Service Role calls)
+      if (!isServiceRoleAuth) {
+        return new Response(
+          JSON.stringify({ error: "Forbidden: Direct notification dispatch requires Service Role authority" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       recipientId = payload.recipient_id;
       pushPayload = {
-        title: payload.notification.title || "DEBPTH Workspace",
-        body: payload.notification.body || "New activity.",
-        url: payload.notification.url || "/",
+        title: (payload.notification.title || "DEBPTH Workspace").slice(0, 120),
+        body: (payload.notification.body || "New activity.").slice(0, 500),
+        url: payload.notification.url && payload.notification.url.startsWith("/") ? payload.notification.url : "/",
         icon: payload.notification.icon || "/pwa-192x192.png",
         badge: "/icon.svg",
         tag: payload.notification.tag || `debpth-${Date.now()}`,
       };
     } else {
       return new Response(
-        JSON.stringify({ error: "Invalid payload: recipient_id and notification content required" }),
+        JSON.stringify({ error: "Invalid payload: Database webhook record or direct notification structure required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -196,10 +306,10 @@ Deno.serve(async (req: Request) => {
         if (statusCode === 404 || statusCode === 410) {
           expiredSubIds.push(sub.id);
         } else {
-          // Log high-level error without dumping cryptographic keys
+          // Log sanitized error without dumping keys or secrets
           console.warn(
             `[send-push] Non-fatal delivery failure (status ${statusCode}):`,
-            pushErr.message || "Unknown push service error"
+            pushErr.message || "Push service error"
           );
         }
       }
@@ -229,7 +339,7 @@ Deno.serve(async (req: Request) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (globalErr: any) {
-    console.error("[send-push] Unhandled exception:", globalErr.message || globalErr);
+    console.error("[send-push] Unhandled exception:", globalErr.message || "Unknown error");
     return new Response(
       JSON.stringify({ error: "Internal server error in push delivery handler" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

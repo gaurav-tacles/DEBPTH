@@ -42,6 +42,8 @@ async function runTests() {
   const memberBId = '00000000-0000-4000-8000-000000000002';
   await workspaceRepo.ensureAuthenticatedProfile(memberAId, 'member.a@debpth.test', 'Member A');
   await workspaceRepo.ensureAuthenticatedProfile(memberBId, 'member.b@debpth.test', 'Member B');
+  workspaceRepo.addWorkspaceMember(memberAId, 'member', adminId);
+  workspaceRepo.addWorkspaceMember(memberBId, 'member', adminId);
 
   const sugA = workspaceRepo.createSuggestion({
     title: 'Multi-User Collaboration Board',
