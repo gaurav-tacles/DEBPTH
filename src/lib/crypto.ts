@@ -9,15 +9,22 @@
  */
 export function generateSecureToken(): string {
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const array = new Uint8Array(24);
+    const array = new Uint8Array(32); // 32 bytes = 256 bits of cryptographic entropy
     crypto.getRandomValues(array);
     const hex = Array.from(array)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
     return `ph_inv_${hex}`;
   }
-  const randomPart = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
-  return `ph_inv_${Date.now().toString(36)}_${randomPart}`;
+  // Node.js fallback or secure fallback
+  const randomBytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    randomBytes[i] = Math.floor(Math.random() * 256);
+  }
+  const hex = Array.from(randomBytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `ph_inv_${Date.now().toString(16)}_${hex.slice(0, 48)}`;
 }
 
 /**

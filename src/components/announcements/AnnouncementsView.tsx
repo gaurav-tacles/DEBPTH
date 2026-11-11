@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Bell,
   Plus,
@@ -13,6 +13,7 @@ import {
   Radio,
   Clock,
   Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { Announcement } from '../../types';
@@ -24,6 +25,7 @@ export const AnnouncementsView: React.FC = () => {
     projects,
     profiles,
     broadcastAnnouncement,
+    refreshWorkspaceData,
   } = useWorkspace();
 
   const [isComposeOpen, setIsComposeOpen] = useState(false);
@@ -35,11 +37,28 @@ export const AnnouncementsView: React.FC = () => {
   const [targetUserIds, setTargetUserIds] = useState<string[]>([]);
   const [targetLabels, setTargetLabels] = useState<string[]>([]);
   const [confirmStep, setConfirmStep] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [composeError, setComposeError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Synchronize latest announcements from Supabase on mount
+  useEffect(() => {
+    refreshWorkspaceData().catch(() => {});
+  }, [refreshWorkspaceData]);
+
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshWorkspaceData();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // Collect unique member labels
   const allLabels = Array.from(new Set(profiles.flatMap((p) => p.labels)));
 
-  const handleComposeSubmit = (e: React.FormEvent) => {
+  const handleComposeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !content.trim()) return;
 
@@ -48,23 +67,33 @@ export const AnnouncementsView: React.FC = () => {
       return;
     }
 
-    broadcastAnnouncement({
-      title: title.trim(),
-      content: content.trim(),
-      priority,
-      targetType,
-      targetMeta: {
-        projectId: targetType === 'project' ? targetProjectId : undefined,
-        userIds: targetType === 'individuals' ? targetUserIds : undefined,
-        labels: targetType === 'labels' ? targetLabels : undefined,
-      },
-      createdBy: '', // workspace repository sets current user
-    });
+    setIsSubmitting(true);
+    setComposeError(null);
 
-    setTitle('');
-    setContent('');
-    setConfirmStep(false);
-    setIsComposeOpen(false);
+    try {
+      await broadcastAnnouncement({
+        title: title.trim(),
+        content: content.trim(),
+        priority,
+        targetType,
+        targetMeta: {
+          projectId: targetType === 'project' ? targetProjectId : undefined,
+          userIds: targetType === 'individuals' ? targetUserIds : undefined,
+          labels: targetType === 'labels' ? targetLabels : undefined,
+        },
+        createdBy: '', // Context sets current user
+      });
+
+      setTitle('');
+      setContent('');
+      setConfirmStep(false);
+      setIsComposeOpen(false);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setComposeError(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleToggleUser = (userId: string) => {
@@ -90,18 +119,31 @@ export const AnnouncementsView: React.FC = () => {
           </p>
         </div>
 
-        {isSuperAdmin && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => {
-              setConfirmStep(false);
-              setIsComposeOpen(true);
-            }}
-            className="flex items-center gap-2 rounded-lg bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED] shadow-sm transition-all focus:ring-2 focus:ring-[#8B5CF6]/40"
+            onClick={handleManualRefresh}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 rounded-lg border border-[#38302D] bg-[#191311] px-3 py-2 text-xs font-medium text-[#B4B0B0] hover:text-[#F4F8FF] hover:bg-[#211B19] transition-all disabled:opacity-50"
+            title="Refresh announcements from database"
           >
-            <Send className="w-4 h-4" />
-            <span>Compose announcement</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>Sync</span>
           </button>
-        )}
+
+          {isSuperAdmin && (
+            <button
+              onClick={() => {
+                setConfirmStep(false);
+                setComposeError(null);
+                setIsComposeOpen(true);
+              }}
+              className="flex items-center gap-2 rounded-lg bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED] shadow-sm transition-all focus:ring-2 focus:ring-[#8B5CF6]/40 cursor-pointer"
+            >
+              <Send className="w-4 h-4" />
+              <span>Compose announcement</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 2. Announcements Feed */}
@@ -199,19 +241,31 @@ export const AnnouncementsView: React.FC = () => {
                     <p className="text-[#B4B0B0] text-xs mt-1 line-clamp-3">{content}</p>
                   </div>
 
+                  {composeError && (
+                    <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-300 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold text-white">Broadcast Failed: </span>
+                        {composeError}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#38302D]">
                     <button
                       type="button"
+                      disabled={isSubmitting}
                       onClick={() => setConfirmStep(false)}
-                      className="rounded-lg px-3 py-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF]"
+                      className="rounded-lg px-3 py-1.5 text-xs text-[#B4B0B0] hover:text-[#F4F8FF] disabled:opacity-50"
                     >
                       Back to Edit
                     </button>
                     <button
                       type="submit"
-                      className="rounded-lg bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED]"
+                      disabled={isSubmitting}
+                      className="rounded-lg bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED] disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                     >
-                      Confirm & Send Broadcast
+                      {isSubmitting ? 'Broadcasting to Database...' : 'Confirm & Send Broadcast'}
                     </button>
                   </div>
                 </div>

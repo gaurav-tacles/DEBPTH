@@ -13,6 +13,10 @@ import {
   Laptop,
   LogOut,
   Lock,
+  Bell,
+  BellRing,
+  BellOff,
+  Radio,
 } from 'lucide-react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import {
@@ -21,6 +25,13 @@ import {
   testSupabaseConnection,
 } from '../../lib/supabase';
 import { logger } from '../../lib/logger';
+import {
+  getPushStatus,
+  subscribeToPush,
+  unsubscribeFromPush,
+  displayLocalNotification,
+  WebPushStatus,
+} from '../../lib/webPush';
 
 export const SettingsView: React.FC = () => {
   const { currentUser, isSuperAdmin, resetWorkspaceData, signOut } = useWorkspace();
@@ -31,6 +42,50 @@ export const SettingsView: React.FC = () => {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latencyMs?: number } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [logs, setLogs] = useState(logger.getHistory());
+
+  const [pushStatus, setPushStatus] = useState<WebPushStatus>({
+    isSupported: false,
+    permission: 'default',
+    isSubscribed: false,
+  });
+  const [pushLoading, setPushLoading] = useState(false);
+  const [pushMessage, setPushMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPushStatus().then(setPushStatus);
+  }, []);
+
+  const handleTogglePush = async () => {
+    if (!currentUser) return;
+    setPushLoading(true);
+    setPushMessage(null);
+    try {
+      if (pushStatus.isSubscribed) {
+        await unsubscribeFromPush(currentUser.id);
+        setPushMessage('Browser push notifications disabled.');
+      } else {
+        const res = await subscribeToPush(currentUser.id);
+        if (res.success) {
+          setPushMessage('Browser push notifications enabled on this device!');
+        } else {
+          setPushMessage(res.error || 'Failed to enable notifications.');
+        }
+      }
+      const updated = await getPushStatus();
+      setPushStatus(updated);
+    } catch (e) {
+      setPushMessage(String(e));
+    } finally {
+      setPushLoading(false);
+    }
+  };
+
+  const handleTestNotification = () => {
+    displayLocalNotification('🚀 DEBPTH Notification Test', {
+      body: 'Your real-time notification engine is active and working properly!',
+      tag: 'test',
+    });
+  };
 
   useEffect(() => {
     const config = getStoredSupabaseConfig();
@@ -289,6 +344,85 @@ CREATE POLICY projects_select ON public.projects
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out of Session</span>
               </button>
+            </div>
+          </div>
+
+          {/* Native Web Push & Realtime Notifications */}
+          <div className="rounded-2xl border border-[#38302D] bg-[#191311] p-5 space-y-4 text-xs">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-sm text-[#F4F8FF] flex items-center gap-2">
+                <BellRing className="w-4 h-4 text-[#8B5CF6]" />
+                <span>Web Push & Real-Time Sync</span>
+              </h2>
+              <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#34D399]/10 text-[#34D399] text-[10px] font-mono font-semibold">
+                <Radio className="w-2.5 h-2.5 animate-pulse" />
+                <span>Realtime Active</span>
+              </span>
+            </div>
+
+            <p className="text-[#B4B0B0] text-[11px] leading-relaxed">
+              Enables background and tab-closed push notifications via W3C Push API and VAPID. Operates at ₹0 / $0 recurring cost without third-party brokers.
+            </p>
+
+            <div className="space-y-2 border-t border-[#38302D] pt-3 text-[11px]">
+              <div className="flex justify-between text-[#B4B0B0]">
+                <span>Browser Push API:</span>
+                <span className={pushStatus.isSupported ? 'text-[#34D399] font-mono' : 'text-[#FB7185] font-mono'}>
+                  {pushStatus.isSupported ? 'Supported' : 'Unavailable'}
+                </span>
+              </div>
+              <div className="flex justify-between text-[#B4B0B0]">
+                <span>Permission:</span>
+                <span className="text-[#F4F8FF] font-mono capitalize">
+                  {pushStatus.permission}
+                </span>
+              </div>
+              <div className="flex justify-between text-[#B4B0B0]">
+                <span>This Device:</span>
+                <span className={pushStatus.isSubscribed ? 'text-[#34D399] font-mono font-semibold' : 'text-[#B4B0B0] font-mono'}>
+                  {pushStatus.isSubscribed ? 'Push Subscribed' : 'Not Subscribed'}
+                </span>
+              </div>
+            </div>
+
+            {pushMessage && (
+              <div className="p-2.5 rounded-xl bg-[#0F0B0A] border border-[#38302D] text-[11px] text-[#F4F8FF]">
+                {pushMessage}
+              </div>
+            )}
+
+            <div className="pt-2 flex flex-col gap-2">
+              <button
+                disabled={!pushStatus.isSupported || pushLoading}
+                onClick={handleTogglePush}
+                className={`w-full flex items-center justify-center gap-2 rounded-xl py-2 px-3 text-xs font-semibold transition cursor-pointer ${
+                  pushStatus.isSubscribed
+                    ? 'border border-[#FB7185]/30 bg-[#FB7185]/10 hover:bg-[#FB7185]/20 text-[#FB7185]'
+                    : 'bg-[#8B5CF6] hover:bg-[#7C3AED] text-white disabled:opacity-50'
+                }`}
+              >
+                {pushStatus.isSubscribed ? (
+                  <>
+                    <BellOff className="w-3.5 h-3.5" />
+                    <span>Unsubscribe This Device</span>
+                  </>
+                ) : (
+                  <>
+                    <Bell className="w-3.5 h-3.5" />
+                    <span>Enable Browser Push Notifications</span>
+                  </>
+                )}
+              </button>
+
+              {pushStatus.permission === 'granted' && (
+                <button
+                  type="button"
+                  onClick={handleTestNotification}
+                  className="w-full flex items-center justify-center gap-1.5 rounded-xl border border-[#38302D] bg-[#0F0B0A] hover:bg-[#231A18] text-[#F4F8FF] py-1.5 px-3 text-[11px] font-medium transition cursor-pointer"
+                >
+                  <span>Send Test Desktop Notification</span>
+                </button>
+              )}
             </div>
           </div>
 

@@ -41,7 +41,7 @@ async function runDay3Tests() {
   );
 
   // Create a test project with child items (tasks, documents, members, milestones)
-  const testProject = workspaceRepo.createProject(
+  const testProject = await workspaceRepo.createProject(
     {
       name: 'Temp Security Project Alpha',
       slug: 'temp-security-project-alpha',

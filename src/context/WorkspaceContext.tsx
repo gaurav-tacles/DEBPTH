@@ -20,6 +20,7 @@ import {
 import { workspaceRepo } from '../services/workspaceRepository';
 import { logger } from '../lib/logger';
 import { getSupabaseClient } from '../lib/supabase';
+import { useRealtimeWorkspace } from '../hooks/useRealtimeWorkspace';
 
 interface WorkspaceContextValue {
   currentUser: UserProfile | null;
@@ -58,8 +59,8 @@ interface WorkspaceContextValue {
   // Workspace Actions
   setActiveProjectId: (id: string | null) => void;
   switchUser: (userId: string) => void;
-  createProject: (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => Project;
-  updateProject: (id: string, updates: Partial<Project>) => Project;
+  createProject: (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => Promise<Project>;
+  updateProject: (id: string, updates: Partial<Project>) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<boolean>;
   addProjectMember: (projectId: string, userId: string, role: ProjectRole, permissions: ProjectMember['permissions']) => void;
   updateProjectMember: (memberId: string, role: ProjectRole, permissions: ProjectMember['permissions']) => void;
@@ -91,16 +92,17 @@ interface WorkspaceContextValue {
   createSuggestion: (data: Omit<Suggestion, 'id' | 'createdAt' | 'updatedAt' | 'status'>) => Suggestion;
   updateSuggestionStatus: (id: string, status: Suggestion['status'], adminNotes?: string, adminResponse?: string) => void;
   convertSuggestionToTask: (suggestionId: string, projectId: string, priority: Task['priority'], assigneeId?: string) => Task;
-  broadcastAnnouncement: (data: Omit<Announcement, 'id' | 'createdAt'>) => Announcement;
+  broadcastAnnouncement: (data: Omit<Announcement, 'id' | 'createdAt'>) => Promise<Announcement>;
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   updateProfileLabels: (userId: string, label: string, action: 'add' | 'remove') => void;
   updateCurrentUserProfile: (updates: Partial<UserProfile>) => Promise<void>;
-  createIdea: (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>) => Idea;
+  createIdea: (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived' | 'userId'>) => Idea;
   updateIdea: (id: string, updates: Partial<Idea>) => Idea;
   deleteIdea: (id: string) => void;
   resetWorkspaceData: () => void;
   refreshWorkspace: () => void;
+  refreshWorkspaceData: () => Promise<void>;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | undefined>(undefined);
@@ -126,6 +128,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setTick((t) => t + 1);
   }, []);
 
+  // Connect to live Supabase Realtime subscriptions
+  useRealtimeWorkspace({
+    currentUserId,
+    isAuthenticated,
+    onRefresh: refreshWorkspace,
+  });
+
   // Initialize and verify authentication on app startup
   useEffect(() => {
     let isMounted = true;
@@ -148,12 +157,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               user.user_metadata?.avatar_url
             );
 
+            // Fetch live projects, announcements, and memberships before rendering
+            await workspaceRepo.syncWithSupabase(profile.id);
+
             if (isMounted) {
               setSession(data.session);
               setCurrentUserId(profile.id);
               setIsAuthenticated(true);
               setProfiles(workspaceRepo.getProfiles());
               setIsCheckingAuth(false);
+              refreshWorkspace();
             }
             return;
           }
@@ -210,16 +223,21 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           localStorage.setItem(AUTH_TOKEN_KEY, 'true');
           localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
           refreshWorkspace();
+          // Synchronize authoritative workspace state
+          await workspaceRepo.syncWithSupabase(profile.id);
+          refreshWorkspace();
         } else if (event === 'PASSWORD_RECOVERY') {
           logger.info('Auth', 'Password recovery event detected');
           setIsPasswordRecovery(true);
         } else if (event === 'SIGNED_OUT') {
+          workspaceRepo.clearCache();
           setSession(null);
           setCurrentUserId('');
           setIsAuthenticated(false);
           setIsPasswordRecovery(false);
           localStorage.removeItem(AUTH_TOKEN_KEY);
           localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+          refreshWorkspace();
         }
       });
       authListenerSub = authListener.subscription;
@@ -331,11 +349,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setProfiles(currentProfiles);
           localStorage.setItem(AUTH_TOKEN_KEY, 'true');
           localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+          // Await workspace data sync with Supabase before finishing sign in
+          await workspaceRepo.syncWithSupabase(profile.id);
           refreshWorkspace();
-          // Trigger asynchronous workspace data sync with Supabase
-          workspaceRepo.syncWithSupabase(profile.id).catch((e) => {
-            logger.warn('Auth', 'Background Supabase sync notice', e);
-          });
           return { error: null };
         }
       } catch (err: unknown) {
@@ -403,6 +419,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               setProfiles(currentProfiles);
               localStorage.setItem(AUTH_TOKEN_KEY, 'true');
               localStorage.setItem(CURRENT_USER_STORAGE_KEY, profile.id);
+              // Await workspace data sync with Supabase
+              await workspaceRepo.syncWithSupabase(profile.id);
               refreshWorkspace();
               return { error: null, emailConfirmationRequired: false };
             } else {
@@ -444,14 +462,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         logger.warn('Auth', 'Error during Supabase signOut', err);
       }
     }
+    workspaceRepo.clearCache();
     setSession(null);
     setCurrentUserId('');
     setIsAuthenticated(false);
     setIsPasswordRecovery(false);
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+    refreshWorkspace();
     logger.info('Auth', 'User successfully signed out');
-  }, []);
+  }, [refreshWorkspace]);
 
   const currentUser = useMemo(() => {
     if (!isAuthenticated || !currentUserId) return null;
@@ -518,9 +538,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [isAuthenticated, tick]);
 
   const suggestions = useMemo(() => {
-    if (!isAuthenticated || !currentUserId) return [];
-    return workspaceRepo.getSuggestions(currentUserId);
-  }, [currentUserId, isAuthenticated, tick]);
+    if (!isAuthenticated) return [];
+    return workspaceRepo.getSuggestions();
+  }, [isAuthenticated, tick]);
 
   const announcements = useMemo(() => {
     if (!isAuthenticated) return [];
@@ -560,8 +580,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Project Actions
   const createProject = useCallback(
-    (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => {
-      const proj = workspaceRepo.createProject(data, currentUserId);
+    async (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => {
+      const proj = await workspaceRepo.createProject(data, currentUserId);
       refreshWorkspace();
       setActiveProjectId(proj.id);
       return proj;
@@ -570,8 +590,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const updateProject = useCallback(
-    (id: string, updates: Partial<Project>) => {
-      const proj = workspaceRepo.updateProject(id, updates, currentUserId);
+    async (id: string, updates: Partial<Project>) => {
+      const proj = await workspaceRepo.updateProject(id, updates, currentUserId);
       refreshWorkspace();
       return proj;
     },
@@ -782,13 +802,20 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Announcements
   const broadcastAnnouncement = useCallback(
-    (data: Omit<Announcement, 'id' | 'createdAt'>) => {
-      const ann = workspaceRepo.broadcastAnnouncement(data);
+    async (data: Omit<Announcement, 'id' | 'createdAt'>) => {
+      const ann = await workspaceRepo.broadcastAnnouncement(data, currentUserId);
       refreshWorkspace();
       return ann;
     },
-    [refreshWorkspace]
+    [currentUserId, refreshWorkspace]
   );
+
+  const refreshWorkspaceData = useCallback(async () => {
+    if (currentUserId) {
+      await workspaceRepo.syncWithSupabase(currentUserId);
+      refreshWorkspace();
+    }
+  }, [currentUserId, refreshWorkspace]);
 
   // Notifications
   const markNotificationRead = useCallback((id: string) => {
@@ -823,7 +850,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Personal Ideas Actions
   const createIdea = useCallback(
-    (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>) => {
+    (data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived' | 'userId'>) => {
       const idea = workspaceRepo.createIdea(data, currentUserId);
       refreshWorkspace();
       return idea;
@@ -920,6 +947,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         deleteIdea,
         resetWorkspaceData,
         refreshWorkspace,
+        refreshWorkspaceData,
       }}
     >
       {children}

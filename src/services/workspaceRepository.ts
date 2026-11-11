@@ -94,6 +94,26 @@ class WorkspaceRepository {
     }
   }
 
+  // Clear workspace cache on sign out
+  clearCache(): void {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(STORAGE_KEY_DATA);
+      }
+    } catch (e) {
+      logger.warn('WorkspaceRepository', 'Failed to clear local workspace storage', e);
+    }
+    this.db = getInitialDatabase();
+  }
+
+  // Helper for test fixture hydration
+  saveDatabaseStateForTesting(partial: Partial<WorkspaceDatabase>): void {
+    this.saveDatabase({
+      ...this.db,
+      ...partial,
+    });
+  }
+
   // Ensure authenticated user profile exists
   async ensureAuthenticatedProfile(
     userId: string,
@@ -210,70 +230,131 @@ class WorkspaceRepository {
 
       // 1. Sync profiles
       const { data: remoteProfiles } = await supabase.from('profiles').select('*');
-      if (remoteProfiles && remoteProfiles.length > 0) {
-        const mappedProfiles: UserProfile[] = remoteProfiles.map((p) => ({
-          id: p.id,
-          email: p.email,
-          fullName: p.full_name,
-          avatarUrl: p.avatar_url,
-          role: p.role,
-          labels: p.labels || [],
-          githubUsername: p.github_username,
-          mfaEnabled: Boolean(p.mfa_enabled),
-          createdAt: p.created_at,
-          lastActiveAt: p.last_active_at,
-        }));
-        this.saveDatabase({ ...this.db, profiles: mappedProfiles });
-      }
+      const mappedProfiles: UserProfile[] = (remoteProfiles || []).map((p) => ({
+        id: p.id,
+        email: p.email,
+        fullName: p.full_name,
+        avatarUrl: p.avatar_url,
+        role: p.role,
+        labels: p.labels || [],
+        githubUsername: p.github_username,
+        mfaEnabled: Boolean(p.mfa_enabled),
+        createdAt: p.created_at,
+        lastActiveAt: p.last_active_at,
+      }));
 
       // 2. Sync projects
-      const { data: remoteProjects } = await supabase.from('projects').select('*');
-      if (remoteProjects) {
-        const mappedProjects: Project[] = remoteProjects.map((p) => ({
-          id: p.id,
-          name: p.name,
-          slug: p.slug,
-          summary: p.summary,
-          problemStatement: p.problem_statement,
-          description: p.description,
-          goals: p.goals || [],
-          features: p.features || [],
-          status: p.status,
-          priority: p.priority,
-          techStack: p.tech_stack || [],
-          repositories: p.repositories || [],
-          links: p.links || [],
-          startDate: p.start_date,
-          targetDate: p.target_date,
-          ownerId: p.owner_id,
-          archived: Boolean(p.archived),
-          createdAt: p.created_at,
-          updatedAt: p.updated_at,
-        }));
-        this.saveDatabase({ ...this.db, projects: mappedProjects });
+      const { data: remoteProjects, error: projErr } = await supabase.from('projects').select('*');
+      if (projErr) {
+        logger.error('WorkspaceRepository', 'Error fetching projects from Supabase', projErr);
       }
+      const mappedProjects: Project[] = (remoteProjects || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        slug: p.slug,
+        summary: p.summary,
+        problemStatement: p.problem_statement,
+        description: p.description,
+        goals: p.goals || [],
+        features: p.features || [],
+        status: p.status,
+        priority: p.priority,
+        techStack: p.tech_stack || [],
+        repositories: p.repositories || [],
+        links: p.links || [],
+        startDate: p.start_date,
+        targetDate: p.target_date,
+        ownerId: p.owner_id,
+        archived: Boolean(p.archived),
+        createdAt: p.created_at,
+        updatedAt: p.updated_at,
+      }));
 
-      // 3. Sync tasks
+      // 3. Sync project members
+      const { data: remoteMembers, error: memErr } = await supabase.from('project_members').select('*');
+      if (memErr) {
+        logger.error('WorkspaceRepository', 'Error fetching project members from Supabase', memErr);
+      }
+      const mappedMembers: ProjectMember[] = (remoteMembers || []).map((pm) => ({
+        id: pm.id,
+        projectId: pm.project_id,
+        userId: pm.user_id,
+        role: pm.role,
+        permissions: {
+          canManageTasks: Boolean(pm.can_manage_tasks),
+          canUploadDocs: Boolean(pm.can_upload_docs),
+          canViewMetrics: Boolean(pm.can_view_metrics),
+          canManageMembers: Boolean(pm.can_manage_members),
+        },
+        joinedAt: pm.joined_at,
+      }));
+
+      // 4. Sync announcements (visible to all authenticated workspace members)
+      const { data: remoteAnnouncements, error: ancErr } = await supabase
+        .from('announcements')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (ancErr) {
+        logger.error('WorkspaceRepository', 'Error fetching announcements from Supabase', ancErr);
+      }
+      const mappedAnnouncements: Announcement[] = (remoteAnnouncements || []).map((a) => ({
+        id: a.id,
+        title: a.title,
+        content: a.content,
+        priority: a.priority,
+        targetType: a.target_type,
+        targetMeta: a.target_meta || {},
+        createdBy: a.created_by,
+        createdAt: a.created_at,
+      }));
+
+      // 5. Sync tasks
       const { data: remoteTasks } = await supabase.from('tasks').select('*');
-      if (remoteTasks) {
-        const mappedTasks: Task[] = remoteTasks.map((t) => ({
-          id: t.id,
-          projectId: t.project_id,
-          title: t.title,
-          description: t.description,
-          status: t.status,
-          priority: t.priority,
-          assigneeId: t.assignee_id,
-          dueDate: t.due_date,
-          milestoneId: t.milestone_id,
-          tags: t.tags || [],
-          createdAt: t.created_at,
-          updatedAt: t.updated_at,
-        }));
-        this.saveDatabase({ ...this.db, tasks: mappedTasks });
-      }
+      const mappedTasks: Task[] = (remoteTasks || []).map((t) => ({
+        id: t.id,
+        projectId: t.project_id,
+        title: t.title,
+        description: t.description,
+        status: t.status,
+        priority: t.priority,
+        assigneeId: t.assignee_id,
+        dueDate: t.due_date,
+        milestoneId: t.milestone_id,
+        tags: t.tags || [],
+        createdAt: t.created_at,
+        updatedAt: t.updated_at,
+      }));
 
-      // 4. Sync ideas (for current authenticated user)
+      // 6. Sync milestones
+      const { data: remoteMilestones } = await supabase.from('milestones').select('*');
+      const mappedMilestones: Milestone[] = (remoteMilestones || []).map((m) => ({
+        id: m.id,
+        projectId: m.project_id,
+        title: m.title,
+        description: m.description,
+        status: m.status,
+        dueDate: m.due_date,
+        createdAt: m.created_at,
+      }));
+
+      // 7. Sync documents
+      const { data: remoteDocs } = await supabase.from('documents').select('*');
+      const mappedDocs: ProjectDocument[] = (remoteDocs || []).map((d) => ({
+        id: d.id,
+        projectId: d.project_id,
+        title: d.title,
+        fileName: d.file_name,
+        fileSize: d.file_size,
+        mimeType: d.mime_type,
+        storagePath: d.storage_path,
+        isRestricted: Boolean(d.is_restricted),
+        uploadedBy: d.uploaded_by,
+        createdAt: d.created_at,
+        updatedAt: d.updated_at || d.created_at,
+      }));
+
+      // 8. Sync ideas (for current authenticated user)
+      let mappedIdeas: Idea[] = this.db.ideas;
       if (currentUserId) {
         const { data: remoteIdeas } = await supabase
           .from('ideas')
@@ -281,7 +362,7 @@ class WorkspaceRepository {
           .eq('user_id', currentUserId);
 
         if (remoteIdeas) {
-          const mappedIdeas: Idea[] = remoteIdeas.map((i) => ({
+          mappedIdeas = remoteIdeas.map((i) => ({
             id: i.id,
             userId: i.user_id,
             title: i.title,
@@ -294,9 +375,87 @@ class WorkspaceRepository {
             createdAt: i.created_at,
             updatedAt: i.updated_at,
           }));
-          this.saveDatabase({ ...this.db, ideas: mappedIdeas });
         }
       }
+
+      // 9. Sync notifications (for current authenticated user)
+      let mappedNotifications: AppNotification[] = this.db.notifications;
+      if (currentUserId) {
+        const { data: remoteNotifs } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('recipient_id', currentUserId)
+          .order('created_at', { ascending: false });
+
+        if (remoteNotifs) {
+          mappedNotifications = remoteNotifs.map((n) => ({
+            id: n.id,
+            recipientId: n.recipient_id,
+            type: n.type,
+            title: n.title,
+            body: n.body,
+            link: n.link,
+            isRead: Boolean(n.is_read),
+            createdAt: n.created_at,
+          }));
+        }
+      }
+
+      // 10. Sync suggestions (shared with all workspace members)
+      const { data: remoteSuggestions } = await supabase
+        .from('suggestions')
+        .select('*')
+        .order('created_at', { ascending: false });
+      const mappedSuggestions: Suggestion[] = (remoteSuggestions || []).map((s) => ({
+        id: s.id,
+        title: s.title,
+        description: s.description,
+        category: s.category,
+        projectId: s.project_id || undefined,
+        submitterId: s.submitter_id,
+        status: s.status,
+        adminNotes: s.admin_notes || undefined,
+        adminResponse: s.admin_response || undefined,
+        convertedTaskId: s.converted_task_id || undefined,
+        createdAt: s.created_at,
+        updatedAt: s.updated_at,
+      }));
+
+      // 11. Sync document access grants
+      const { data: remoteGrants } = await supabase.from('document_access_grants').select('*');
+      const mappedGrants: DocumentAccessGrant[] = (remoteGrants || []).map((g) => ({
+        id: g.id,
+        documentId: g.document_id,
+        userId: g.user_id,
+        status: g.status,
+        reason: g.reason || undefined,
+        grantedUntil: g.granted_until || undefined,
+        requestedAt: g.requested_at,
+        reviewedBy: g.reviewed_by || undefined,
+        reviewedAt: g.reviewed_at || undefined,
+        reviewerNotes: g.reviewer_notes || undefined,
+      }));
+
+      // 12. Persist complete synchronized workspace state
+      this.saveDatabase({
+        ...this.db,
+        profiles: mappedProfiles.length > 0 ? mappedProfiles : this.db.profiles,
+        projects: mappedProjects,
+        projectMembers: mappedMembers,
+        announcements: mappedAnnouncements,
+        tasks: mappedTasks,
+        milestones: mappedMilestones,
+        documents: mappedDocs,
+        documentGrants: mappedGrants.length > 0 ? mappedGrants : this.db.documentGrants,
+        suggestions: mappedSuggestions.length > 0 ? mappedSuggestions : this.db.suggestions,
+        ideas: mappedIdeas,
+        notifications: mappedNotifications,
+      });
+
+      logger.info(
+        'WorkspaceRepository',
+        `Synced with Supabase: ${mappedProjects.length} projects, ${mappedAnnouncements.length} announcements, ${mappedSuggestions.length} suggestions`
+      );
     } catch (err) {
       logger.error('WorkspaceRepository', 'Error syncing with Supabase', err);
     }
@@ -391,8 +550,8 @@ class WorkspaceRepository {
       };
     }).filter((proj) => {
       if (!forUserId || isSuperAdmin) return true;
-      // Member only sees projects they are explicitly assigned to!
-      return this.db.projectMembers.some((pm) => pm.projectId === proj.id && pm.userId === forUserId);
+      // Member only sees projects they are explicitly assigned to or they own!
+      return proj.ownerId === forUserId || this.db.projectMembers.some((pm) => pm.projectId === proj.id && pm.userId === forUserId);
     });
   }
 
@@ -401,20 +560,21 @@ class WorkspaceRepository {
     return all.find((p) => p.id === projectId) || null;
   }
 
-  createProject(
+  async createProject(
     projectData: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>,
     creatorId: string
-  ): Project {
-    const newId = `proj-${Date.now()}`;
-    const slug = projectData.name
+  ): Promise<Project> {
+    const newId = generateUuid();
+    const baseSlug = projectData.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+      .replace(/^-|-$/g, '') || 'project';
+    const slug = `${baseSlug}-${newId.slice(0, 8)}`;
 
     const newProject: Project = {
       ...projectData,
       id: newId,
-      slug: slug || `project-${newId}`,
+      slug,
       archived: false,
       ownerId: creatorId,
       createdAt: new Date().toISOString(),
@@ -422,7 +582,7 @@ class WorkspaceRepository {
     };
 
     const newMember: ProjectMember = {
-      id: `pm-${Date.now()}`,
+      id: generateUuid(),
       projectId: newId,
       userId: creatorId,
       role: 'lead',
@@ -436,13 +596,62 @@ class WorkspaceRepository {
     };
 
     const newActivity: ActivityEvent = {
-      id: `act-${Date.now()}`,
+      id: generateUuid(),
       projectId: newId,
       userId: creatorId,
       action: 'project_created',
       details: `Created new project "${newProject.name}"`,
       createdAt: new Date().toISOString(),
     };
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      // 1. Insert project into Supabase
+      const { error: projError } = await supabase
+        .from('projects')
+        .insert({
+          id: newProject.id,
+          name: newProject.name,
+          slug: newProject.slug,
+          summary: newProject.summary,
+          problem_statement: newProject.problemStatement || null,
+          description: newProject.description,
+          goals: newProject.goals || [],
+          features: newProject.features || [],
+          status: newProject.status,
+          priority: newProject.priority,
+          tech_stack: newProject.techStack || [],
+          repositories: newProject.repositories || [],
+          links: newProject.links || [],
+          start_date: newProject.startDate ? newProject.startDate : null,
+          target_date: newProject.targetDate ? newProject.targetDate : null,
+          owner_id: creatorId,
+        });
+
+      if (projError) {
+        logger.error('WorkspaceRepository', 'Failed to insert project into Supabase', projError);
+        throw new Error(`Failed to create project: ${projError.message}`);
+      }
+
+      // 2. Insert creator into project_members as lead
+      const { error: memberError } = await supabase
+        .from('project_members')
+        .insert({
+          id: newMember.id,
+          project_id: newProject.id,
+          user_id: creatorId,
+          role: 'lead',
+          can_manage_tasks: true,
+          can_upload_docs: true,
+          can_view_metrics: true,
+          can_manage_members: true,
+          joined_at: newMember.joinedAt,
+        });
+
+      if (memberError) {
+        logger.warn('WorkspaceRepository', 'Notice on project_members insert', memberError);
+      }
+    }
 
     this.saveDatabase({
       ...this.db,
@@ -451,45 +660,48 @@ class WorkspaceRepository {
       activityLogs: [newActivity, ...this.db.activityLogs],
     });
 
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      Promise.resolve(
-        supabase
-          .from('projects')
-          .insert({
-            id: newProject.id,
-            name: newProject.name,
-            slug: newProject.slug,
-            summary: newProject.summary,
-            problem_statement: newProject.problemStatement,
-            description: newProject.description,
-            goals: newProject.goals,
-            features: newProject.features,
-            status: newProject.status,
-            priority: newProject.priority,
-            tech_stack: newProject.techStack,
-            repositories: newProject.repositories,
-            links: newProject.links,
-            start_date: newProject.startDate,
-            target_date: newProject.targetDate,
-            owner_id: creatorId,
-          })
-      )
-        .then(() => logger.info('WorkspaceRepository', 'Project inserted to Supabase'))
-        .catch((e: unknown) => logger.warn('WorkspaceRepository', 'Failed to insert project into Supabase', e));
-    }
-
     logger.info('WorkspaceRepository', `Project created: ${newId}`, { name: newProject.name });
     return this.getProjectById(newId)!;
   }
 
-  updateProject(projectId: string, updates: Partial<Project>, actorId: string): Project {
+  async updateProject(projectId: string, updates: Partial<Project>, actorId: string): Promise<Project> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const payload: Record<string, unknown> = {
+        updated_at: new Date().toISOString(),
+      };
+      if (updates.name !== undefined) payload.name = updates.name;
+      if (updates.summary !== undefined) payload.summary = updates.summary;
+      if (updates.problemStatement !== undefined) payload.problem_statement = updates.problemStatement || null;
+      if (updates.description !== undefined) payload.description = updates.description;
+      if (updates.status !== undefined) payload.status = updates.status;
+      if (updates.priority !== undefined) payload.priority = updates.priority;
+      if (updates.techStack !== undefined) payload.tech_stack = updates.techStack;
+      if (updates.goals !== undefined) payload.goals = updates.goals;
+      if (updates.features !== undefined) payload.features = updates.features;
+      if (updates.repositories !== undefined) payload.repositories = updates.repositories;
+      if (updates.links !== undefined) payload.links = updates.links;
+      if (updates.startDate !== undefined) payload.start_date = updates.startDate ? updates.startDate : null;
+      if (updates.targetDate !== undefined) payload.target_date = updates.targetDate ? updates.targetDate : null;
+      if (updates.archived !== undefined) payload.archived = updates.archived;
+
+      const { error } = await supabase
+        .from('projects')
+        .update(payload)
+        .eq('id', projectId);
+
+      if (error) {
+        logger.error('WorkspaceRepository', 'Failed to update project in Supabase', error);
+        throw new Error(`Failed to update project: ${error.message}`);
+      }
+    }
+
     const updatedProjects = this.db.projects.map((p) =>
       p.id === projectId ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p
     );
 
     const newActivity: ActivityEvent = {
-      id: `act-${Date.now()}`,
+      id: generateUuid(),
       projectId,
       userId: actorId,
       action: 'project_updated',
@@ -588,7 +800,7 @@ class WorkspaceRepository {
     }
 
     const newMember: ProjectMember = {
-      id: `pm-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: generateUuid(),
       projectId,
       userId,
       role,
@@ -600,7 +812,7 @@ class WorkspaceRepository {
     const proj = this.getProjectById(projectId);
 
     const newActivity: ActivityEvent = {
-      id: `act-${Date.now()}`,
+      id: generateUuid(),
       projectId,
       userId: actorId,
       action: 'member_added',
@@ -609,7 +821,7 @@ class WorkspaceRepository {
     };
 
     const newNotif: AppNotification = {
-      id: `notif-${Date.now()}`,
+      id: generateUuid(),
       recipientId: userId,
       type: 'invitation',
       title: 'Added to Project',
@@ -618,6 +830,26 @@ class WorkspaceRepository {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase
+        .from('project_members')
+        .insert({
+          id: newMember.id,
+          project_id: projectId,
+          user_id: userId,
+          role,
+          can_manage_tasks: permissions.canManageTasks,
+          can_upload_docs: permissions.canUploadDocs,
+          can_view_metrics: permissions.canViewMetrics,
+          can_manage_members: permissions.canManageMembers,
+          joined_at: newMember.joinedAt,
+        })
+        .then(({ error }) => {
+          if (error) logger.warn('WorkspaceRepository', 'Notice on project_members insert', error);
+        });
+    }
 
     this.saveDatabase({
       ...this.db,
@@ -736,8 +968,7 @@ class WorkspaceRepository {
         id: generatedId,
         email: newInv.email,
         role: newInv.role,
-        token_hash: tokenHash,
-        token: rawToken,
+        token_hash: tokenHash, // Store ONLY cryptographic SHA-256 hash
         initial_labels: initialLabels,
         assigned_project_ids: validAssignedProjectIds,
         invited_project_role: invitedProjectRole,
@@ -943,26 +1174,28 @@ class WorkspaceRepository {
   }
 
   createTask(taskData: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>, actorId: string): Task {
-    const newId = `t-${Date.now()}`;
+    const newId = generateUuid();
+    const now = new Date().toISOString();
     const newTask: Task = {
       ...taskData,
       id: newId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     const notifs = [...this.db.notifications];
+    const notifId = generateUuid();
     if (newTask.assigneeId && newTask.assigneeId !== actorId) {
       const proj = this.getProjectById(newTask.projectId);
       notifs.unshift({
-        id: `notif-${Date.now()}`,
+        id: notifId,
         recipientId: newTask.assigneeId,
         type: 'task_assigned',
         title: 'New Task Assigned',
         body: `You were assigned to "${newTask.title}" in ${proj?.name || 'project'}.`,
         link: `/projects/${newTask.projectId}?tab=tasks`,
         isRead: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       });
     }
 
@@ -982,17 +1215,33 @@ class WorkspaceRepository {
           description: newTask.description,
           status: newTask.status,
           priority: newTask.priority,
-          assignee_id: newTask.assigneeId,
-          due_date: newTask.dueDate,
-          tags: newTask.tags,
+          assignee_id: newTask.assigneeId && isValidUuid(newTask.assigneeId) ? newTask.assigneeId : null,
+          due_date: newTask.dueDate || null,
+          milestone_id: newTask.milestoneId && isValidUuid(newTask.milestoneId) ? newTask.milestoneId : null,
+          tags: newTask.tags || [],
         })
       ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync task to Supabase', e));
+
+      if (newTask.assigneeId && newTask.assigneeId !== actorId && isValidUuid(newTask.assigneeId)) {
+        const proj = this.getProjectById(newTask.projectId);
+        Promise.resolve(
+          supabase.from('notifications').insert({
+            id: notifId,
+            recipient_id: newTask.assigneeId,
+            type: 'task_assigned',
+            title: 'New Task Assigned',
+            body: `You were assigned to "${newTask.title}" in ${proj?.name || 'project'}.`,
+            link: `/projects/${newTask.projectId}?tab=tasks`,
+            is_read: false,
+          })
+        ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync notification to Supabase', e));
+      }
     }
 
     return { ...newTask, assignee: newTask.assigneeId ? this.getProfileById(newTask.assigneeId) : undefined };
   }
 
-  updateTask(taskId: string, updates: Partial<Task>, actorId: string): Task {
+  updateTask(taskId: string, updates: Partial<Task>, _actorId: string): Task {
     const updatedTasks = this.db.tasks.map((t) =>
       t.id === taskId ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t
     );
@@ -1004,15 +1253,24 @@ class WorkspaceRepository {
 
     const supabase = getSupabaseClient();
     if (supabase) {
+      const dbUpdates: Record<string, any> = {
+        updated_at: new Date().toISOString(),
+      };
+      if (updates.status !== undefined) dbUpdates.status = updates.status;
+      if (updates.priority !== undefined) dbUpdates.priority = updates.priority;
+      if (updates.title !== undefined) dbUpdates.title = updates.title;
+      if (updates.description !== undefined) dbUpdates.description = updates.description;
+      if (updates.dueDate !== undefined) dbUpdates.due_date = updates.dueDate || null;
+      if (updates.tags !== undefined) dbUpdates.tags = updates.tags;
+      if (updates.assigneeId !== undefined) {
+        dbUpdates.assignee_id = updates.assigneeId && isValidUuid(updates.assigneeId) ? updates.assigneeId : null;
+      }
+      if (updates.milestoneId !== undefined) {
+        dbUpdates.milestone_id = updates.milestoneId && isValidUuid(updates.milestoneId) ? updates.milestoneId : null;
+      }
+
       Promise.resolve(
-        supabase.from('tasks').update({
-          status: updates.status,
-          priority: updates.priority,
-          assignee_id: updates.assigneeId,
-          due_date: updates.dueDate,
-          title: updates.title,
-          description: updates.description,
-        }).eq('id', taskId)
+        supabase.from('tasks').update(dbUpdates).eq('id', taskId)
       ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update task in Supabase', e));
     }
 
@@ -1039,16 +1297,32 @@ class WorkspaceRepository {
   }
 
   createMilestone(milestoneData: Omit<Milestone, 'id' | 'createdAt'>): Milestone {
-    const newId = `m-${Date.now()}`;
+    const newId = generateUuid();
+    const now = new Date().toISOString();
     const newMilestone: Milestone = {
       ...milestoneData,
       id: newId,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
     this.saveDatabase({
       ...this.db,
       milestones: [...this.db.milestones, newMilestone],
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('milestones').insert({
+          id: newMilestone.id,
+          project_id: newMilestone.projectId,
+          title: newMilestone.title,
+          description: newMilestone.description || null,
+          due_date: newMilestone.dueDate,
+          status: newMilestone.status || 'open',
+        })
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync milestone to Supabase', e));
+    }
+
     return newMilestone;
   }
 
@@ -1079,17 +1353,36 @@ class WorkspaceRepository {
   }
 
   createDocument(docData: Omit<ProjectDocument, 'id' | 'createdAt' | 'updatedAt'>): ProjectDocument {
-    const newId = `doc-${Date.now()}`;
+    const newId = generateUuid();
+    const now = new Date().toISOString();
     const newDoc: ProjectDocument = {
       ...docData,
       id: newId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
     this.saveDatabase({
       ...this.db,
       documents: [newDoc, ...this.db.documents],
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('documents').insert({
+          id: newDoc.id,
+          project_id: newDoc.projectId,
+          title: newDoc.title,
+          file_name: newDoc.fileName,
+          file_size: newDoc.fileSize,
+          mime_type: newDoc.mimeType,
+          storage_path: newDoc.storagePath,
+          is_restricted: newDoc.isRestricted,
+          uploaded_by: newDoc.uploadedBy,
+        })
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync document to Supabase', e));
+    }
+
     return { ...newDoc, uploader: this.getProfileById(newDoc.uploadedBy) };
   }
 
@@ -1105,13 +1398,17 @@ class WorkspaceRepository {
 
   requestDocumentAccess(documentId: string, userId: string, reason: string): DocumentAccessGrant {
     const existing = this.db.documentGrants.find((g) => g.documentId === documentId && g.userId === userId);
+    const grantId = existing ? existing.id : generateUuid();
+    const now = new Date().toISOString();
+    const notifId = generateUuid();
+
     const newGrant: DocumentAccessGrant = {
-      id: existing ? existing.id : `grant-${Date.now()}`,
+      id: grantId,
       documentId,
       userId,
       status: 'pending',
       reason,
-      requestedAt: new Date().toISOString(),
+      requestedAt: now,
     };
 
     const doc = this.db.documents.find((d) => d.id === documentId);
@@ -1121,13 +1418,13 @@ class WorkspaceRepository {
     const notifs = [...this.db.notifications];
     if (superAdmin) {
       notifs.unshift({
-        id: `notif-${Date.now()}`,
+        id: notifId,
         recipientId: superAdmin.id,
         type: 'doc_request',
         title: 'Restricted Document Access Request',
         body: `${user?.fullName || 'A member'} requested access to "${doc?.title || 'a restricted document'}".`,
         isRead: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       });
     }
 
@@ -1140,6 +1437,33 @@ class WorkspaceRepository {
       documentGrants: updatedGrants,
       notifications: notifs,
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('document_access_grants').upsert({
+          id: grantId,
+          document_id: documentId,
+          user_id: userId,
+          status: 'pending',
+          reason,
+          requested_at: now,
+        })
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync document grant to Supabase', e));
+
+      if (superAdmin && isValidUuid(superAdmin.id)) {
+        Promise.resolve(
+          supabase.from('notifications').insert({
+            id: notifId,
+            recipient_id: superAdmin.id,
+            type: 'doc_request',
+            title: 'Restricted Document Access Request',
+            body: `${user?.fullName || 'A member'} requested access to "${doc?.title || 'a restricted document'}".`,
+            is_read: false,
+          })
+        ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync notification to Supabase', e));
+      }
+    }
 
     return { ...newGrant, user, document: doc };
   }
@@ -1154,13 +1478,15 @@ class WorkspaceRepository {
     const grant = this.db.documentGrants.find((g) => g.id === grantId);
     if (!grant) return;
 
+    const now = new Date().toISOString();
+    const notifId = generateUuid();
     const updatedGrants = this.db.documentGrants.map((g) =>
       g.id === grantId
         ? {
             ...g,
             status,
             reviewedBy: reviewerId,
-            reviewedAt: new Date().toISOString(),
+            reviewedAt: now,
             grantedUntil,
             reviewerNotes,
           }
@@ -1170,13 +1496,13 @@ class WorkspaceRepository {
     const doc = this.db.documents.find((d) => d.id === grant.documentId);
     const notifs = [...this.db.notifications];
     notifs.unshift({
-      id: `notif-${Date.now()}`,
+      id: notifId,
       recipientId: grant.userId,
       type: 'doc_request',
       title: `Document Access ${status === 'approved' ? 'Approved' : 'Declined'}`,
       body: `Your request for "${doc?.title || 'document'}" was ${status}.`,
       isRead: false,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     });
 
     this.saveDatabase({
@@ -1184,46 +1510,66 @@ class WorkspaceRepository {
       documentGrants: updatedGrants,
       notifications: notifs,
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('document_access_grants').update({
+          status,
+          reviewed_by: isValidUuid(reviewerId) ? reviewerId : null,
+          reviewed_at: now,
+          granted_until: grantedUntil || null,
+          reviewer_notes: reviewerNotes || null,
+        }).eq('id', grantId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update document grant in Supabase', e));
+
+      if (isValidUuid(grant.userId)) {
+        Promise.resolve(
+          supabase.from('notifications').insert({
+            id: notifId,
+            recipient_id: grant.userId,
+            type: 'doc_request',
+            title: `Document Access ${status === 'approved' ? 'Approved' : 'Declined'}`,
+            body: `Your request for "${doc?.title || 'document'}" was ${status}.`,
+            is_read: false,
+          })
+        ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync notification to Supabase', e));
+      }
+    }
   }
 
-  // Suggestions Center
-  getSuggestions(forUserId?: string): Suggestion[] {
-    const user = forUserId ? this.getProfileById(forUserId) : undefined;
-    const isSuperAdmin = user?.role === 'super_admin';
-
-    let list = this.db.suggestions;
-    if (forUserId && !isSuperAdmin) {
-      list = list.filter((s) => s.submitterId === forUserId);
-    }
-
-    return list.map((s) => ({
+  // Suggestions Center (Shared with all workspace members)
+  getSuggestions(_forUserId?: string): Suggestion[] {
+    return this.db.suggestions.map((s) => ({
       ...s,
       submitter: this.getProfileById(s.submitterId),
     }));
   }
 
   createSuggestion(data: Omit<Suggestion, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Suggestion {
-    const newId = `sug-${Date.now()}`;
+    const newId = generateUuid();
+    const now = new Date().toISOString();
     const newSug: Suggestion = {
       ...data,
       id: newId,
       status: 'submitted',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
 
+    const notifId = generateUuid();
     const superAdmin = this.db.profiles.find((p) => p.role === 'super_admin');
     const submitter = this.getProfileById(data.submitterId);
     const notifs = [...this.db.notifications];
     if (superAdmin && superAdmin.id !== data.submitterId) {
       notifs.unshift({
-        id: `notif-${Date.now()}`,
+        id: notifId,
         recipientId: superAdmin.id,
         type: 'suggestion_update',
         title: 'New Member Suggestion',
         body: `${submitter?.fullName || 'A member'} submitted: "${newSug.title}"`,
         isRead: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       });
     }
 
@@ -1241,11 +1587,24 @@ class WorkspaceRepository {
           title: newSug.title,
           description: newSug.description,
           category: newSug.category,
-          project_id: newSug.projectId,
+          project_id: newSug.projectId && isValidUuid(newSug.projectId) ? newSug.projectId : null,
           submitter_id: newSug.submitterId,
           status: newSug.status,
         })
       ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync suggestion to Supabase', e));
+
+      if (superAdmin && superAdmin.id !== data.submitterId && isValidUuid(superAdmin.id)) {
+        Promise.resolve(
+          supabase.from('notifications').insert({
+            id: notifId,
+            recipient_id: superAdmin.id,
+            type: 'suggestion_update',
+            title: 'New Member Suggestion',
+            body: `${submitter?.fullName || 'A member'} submitted: "${newSug.title}"`,
+            is_read: false,
+          })
+        ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync notification to Supabase', e));
+      }
     }
 
     return { ...newSug, submitter };
@@ -1261,6 +1620,8 @@ class WorkspaceRepository {
     const sug = this.db.suggestions.find((s) => s.id === suggestionId);
     if (!sug) return;
 
+    const now = new Date().toISOString();
+    const notifId = generateUuid();
     const updated = this.db.suggestions.map((s) =>
       s.id === suggestionId
         ? {
@@ -1268,7 +1629,7 @@ class WorkspaceRepository {
             status,
             adminNotes: adminNotes !== undefined ? adminNotes : s.adminNotes,
             adminResponse: adminResponse !== undefined ? adminResponse : s.adminResponse,
-            updatedAt: new Date().toISOString(),
+            updatedAt: now,
           }
         : s
     );
@@ -1276,13 +1637,13 @@ class WorkspaceRepository {
     const notifs = [...this.db.notifications];
     if (sug.submitterId !== actorId) {
       notifs.unshift({
-        id: `notif-${Date.now()}`,
+        id: notifId,
         recipientId: sug.submitterId,
         type: 'suggestion_update',
         title: `Suggestion Status: ${status.replace('_', ' ').toUpperCase()}`,
         body: `"${sug.title}" is now marked as ${status}.${adminResponse ? ` Response: ${adminResponse}` : ''}`,
         isRead: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       });
     }
 
@@ -1291,6 +1652,31 @@ class WorkspaceRepository {
       suggestions: updated,
       notifications: notifs,
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('suggestions').update({
+          status,
+          admin_notes: adminNotes !== undefined ? adminNotes : null,
+          admin_response: adminResponse !== undefined ? adminResponse : null,
+          updated_at: now,
+        }).eq('id', suggestionId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update suggestion in Supabase', e));
+
+      if (sug.submitterId !== actorId && isValidUuid(sug.submitterId)) {
+        Promise.resolve(
+          supabase.from('notifications').insert({
+            id: notifId,
+            recipient_id: sug.submitterId,
+            type: 'suggestion_update',
+            title: `Suggestion Status: ${status.replace('_', ' ').toUpperCase()}`,
+            body: `"${sug.title}" is now marked as ${status}.${adminResponse ? ` Response: ${adminResponse}` : ''}`,
+            is_read: false,
+          })
+        ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync notification to Supabase', e));
+      }
+    }
   }
 
   convertSuggestionToTask(
@@ -1333,6 +1719,17 @@ class WorkspaceRepository {
       suggestions: updatedSuggestions,
     });
 
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('suggestions').update({
+          converted_task_id: newTask.id,
+          status: 'planned',
+          updated_at: new Date().toISOString(),
+        }).eq('id', suggestionId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not sync convertedTaskId to Supabase', e));
+    }
+
     return newTask;
   }
 
@@ -1341,13 +1738,37 @@ class WorkspaceRepository {
     return [...this.db.announcements];
   }
 
-  broadcastAnnouncement(data: Omit<Announcement, 'id' | 'createdAt'>): Announcement {
-    const newId = `anc-${Date.now()}`;
+  async broadcastAnnouncement(
+    data: Omit<Announcement, 'id' | 'createdAt'>,
+    creatorId: string
+  ): Promise<Announcement> {
+    const newId = generateUuid();
     const newAnc: Announcement = {
       ...data,
       id: newId,
+      createdBy: creatorId,
       createdAt: new Date().toISOString(),
     };
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const { error: ancError } = await supabase
+        .from('announcements')
+        .insert({
+          id: newAnc.id,
+          title: newAnc.title,
+          content: newAnc.content,
+          priority: newAnc.priority,
+          target_type: newAnc.targetType,
+          target_meta: newAnc.targetMeta || {},
+          created_by: creatorId,
+        });
+
+      if (ancError) {
+        logger.error('WorkspaceRepository', 'Failed to insert announcement into Supabase', ancError);
+        throw new Error(`Failed to publish announcement: ${ancError.message}`);
+      }
+    }
 
     let recipientIds: string[] = [];
     if (data.targetType === 'all') {
@@ -1366,7 +1787,7 @@ class WorkspaceRepository {
     }
 
     const notifs: AppNotification[] = recipientIds.map((userId) => ({
-      id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: generateUuid(),
       recipientId: userId,
       type: 'announcement',
       title: `${data.priority === 'important' ? '[Important] ' : ''}${data.title}`,
@@ -1375,12 +1796,30 @@ class WorkspaceRepository {
       createdAt: new Date().toISOString(),
     }));
 
+    if (supabase && notifs.length > 0) {
+      const notifRows = notifs.map((n) => ({
+        id: n.id,
+        recipient_id: n.recipientId,
+        type: n.type,
+        title: n.title,
+        body: n.body,
+        is_read: false,
+      }));
+      supabase
+        .from('notifications')
+        .insert(notifRows)
+        .then(({ error }) => {
+          if (error) logger.warn('WorkspaceRepository', 'Notice on notifications insert', error);
+        });
+    }
+
     this.saveDatabase({
       ...this.db,
       announcements: [newAnc, ...this.db.announcements],
       notifications: [...notifs, ...this.db.notifications],
     });
 
+    logger.info('WorkspaceRepository', `Announcement published: "${newAnc.title}" (${newId})`);
     return newAnc;
   }
 
@@ -1391,6 +1830,13 @@ class WorkspaceRepository {
   markNotificationRead(notifId: string) {
     const updated = this.db.notifications.map((n) => (n.id === notifId ? { ...n, isRead: true } : n));
     this.saveDatabase({ ...this.db, notifications: updated });
+
+    const supabase = getSupabaseClient();
+    if (supabase && isValidUuid(notifId)) {
+      Promise.resolve(
+        supabase.from('notifications').update({ is_read: true }).eq('id', notifId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update notification in Supabase', e));
+    }
   }
 
   markAllNotificationsRead(userId: string) {
@@ -1398,6 +1844,13 @@ class WorkspaceRepository {
       n.recipientId === userId ? { ...n, isRead: true } : n
     );
     this.saveDatabase({ ...this.db, notifications: updated });
+
+    const supabase = getSupabaseClient();
+    if (supabase && isValidUuid(userId)) {
+      Promise.resolve(
+        supabase.from('notifications').update({ is_read: true }).eq('recipient_id', userId)
+      ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update notifications in Supabase', e));
+    }
   }
 
   getActivityLogs(projectId?: string): ActivityEvent[] {
@@ -1419,7 +1872,7 @@ class WorkspaceRepository {
   }
 
   createIdea(
-    data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived'>,
+    data: Omit<Idea, 'id' | 'createdAt' | 'updatedAt' | 'isArchived' | 'userId'>,
     userId: string
   ): Idea {
     const newId = `idea-${Date.now()}`;

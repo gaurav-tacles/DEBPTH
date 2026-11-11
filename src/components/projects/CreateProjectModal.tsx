@@ -5,7 +5,7 @@ import { Project, ProjectStatus, Priority } from '../../types';
 interface CreateProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (project: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => void;
+  onCreate: (project: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>) => Promise<unknown> | unknown;
 }
 
 export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
@@ -27,6 +27,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
   const [startDate, setStartDate] = useState('');
   const [targetDate, setTargetDate] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
@@ -45,14 +46,16 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
     setStartDate('');
     setTargetDate('');
     setErrorMessage(null);
+    setIsSubmitting(false);
   };
 
   const handleClose = () => {
+    if (isSubmitting) return;
     handleReset();
     onClose();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!name.trim()) {
@@ -90,25 +93,34 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
         ]
       : [];
 
-    onCreate({
-      name: name.trim(),
-      slug: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      summary: summary.trim(),
-      problemStatement: problemStatement.trim() || undefined,
-      description: description.trim() || summary.trim(),
-      status,
-      priority,
-      techStack: techStack.length > 0 ? techStack : ['TypeScript'],
-      goals,
-      features,
-      repositories,
-      links: [],
-      startDate: startDate || undefined,
-      targetDate: targetDate || undefined,
-      ownerId: '', // Context assigns current user
-    });
+    setIsSubmitting(true);
+    setErrorMessage(null);
 
-    handleClose();
+    try {
+      await onCreate({
+        name: name.trim(),
+        slug: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        summary: summary.trim(),
+        problemStatement: problemStatement.trim() || undefined,
+        description: description.trim() || summary.trim(),
+        status,
+        priority,
+        techStack: techStack.length > 0 ? techStack : ['TypeScript'],
+        goals,
+        features,
+        repositories,
+        links: [],
+        startDate: startDate || undefined,
+        targetDate: targetDate || undefined,
+        ownerId: '', // Context assigns current user
+      });
+      handleClose();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMessage(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -352,9 +364,10 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
             </button>
             <button
               type="submit"
-              className="rounded-lg bg-indigo-600 px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition cursor-pointer min-h-[38px] flex items-center justify-center gap-1.5"
+              disabled={isSubmitting}
+              className="rounded-lg bg-indigo-600 px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition cursor-pointer min-h-[38px] flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Create Project
+              {isSubmitting ? 'Creating Project...' : 'Create Project'}
             </button>
           </div>
         </form>

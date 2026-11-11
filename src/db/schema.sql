@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS public.invitations (
   project_role public.project_member_role DEFAULT 'collaborator',
   invited_project_role public.project_member_role DEFAULT 'collaborator',
   project_permissions JSONB DEFAULT '{"canManageTasks": true, "canUploadDocs": true, "canViewMetrics": true, "canManageMembers": false}'::jsonb,
-  token TEXT UNIQUE NOT NULL,
+  token TEXT UNIQUE,
   token_hash TEXT UNIQUE,
   invited_by UUID NOT NULL REFERENCES public.profiles(id) ON DELETE RESTRICT,
   initial_labels TEXT[] NOT NULL DEFAULT '{}',
@@ -279,6 +279,20 @@ CREATE TABLE IF NOT EXISTS public.activity_logs (
 CREATE INDEX IF NOT EXISTS idx_activity_project ON public.activity_logs(project_id);
 CREATE INDEX IF NOT EXISTS idx_activity_user ON public.activity_logs(user_id);
 
+-- 3.14 WEB PUSH SUBSCRIPTIONS TABLE
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+  UNIQUE(user_id, endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_sub_user ON public.push_subscriptions(user_id);
+
 -- ==============================================================================
 -- 4. SECURITY DEFINER HELPER FUNCTIONS
 -- ==============================================================================
@@ -306,6 +320,9 @@ SET search_path = public, auth
 STABLE
 AS $$
   SELECT public.is_super_admin() OR EXISTS (
+    SELECT 1 FROM public.projects
+    WHERE id = proj_id AND owner_id = auth.uid()
+  ) OR EXISTS (
     SELECT 1 FROM public.project_members
     WHERE project_id = proj_id AND user_id = auth.uid()
   );
@@ -320,6 +337,9 @@ SET search_path = public, auth
 STABLE
 AS $$
   SELECT public.is_super_admin() OR EXISTS (
+    SELECT 1 FROM public.projects
+    WHERE id = p_project_id AND owner_id = auth.uid()
+  ) OR EXISTS (
     SELECT 1 FROM public.project_members
     WHERE project_id = p_project_id 
       AND user_id = auth.uid() 
@@ -762,24 +782,25 @@ CREATE POLICY doc_grants_delete ON public.document_access_grants
     )
   );
 
--- 6.9 Suggestions Policies
+-- 6.9 Suggestions Policies (Collaborative Workspace Suggestions)
 DROP POLICY IF EXISTS suggestions_select ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_insert ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_admin_update ON public.suggestions;
+DROP POLICY IF EXISTS suggestions_update ON public.suggestions;
 DROP POLICY IF EXISTS suggestions_delete ON public.suggestions;
 
 CREATE POLICY suggestions_select ON public.suggestions
   FOR SELECT TO authenticated
-  USING (submitter_id = auth.uid() OR public.is_super_admin());
+  USING (true);
 
 CREATE POLICY suggestions_insert ON public.suggestions
   FOR INSERT TO authenticated
   WITH CHECK (submitter_id = auth.uid());
 
-CREATE POLICY suggestions_admin_update ON public.suggestions
+CREATE POLICY suggestions_update ON public.suggestions
   FOR UPDATE TO authenticated
-  USING (public.is_super_admin())
-  WITH CHECK (public.is_super_admin());
+  USING (public.is_super_admin() OR submitter_id = auth.uid())
+  WITH CHECK (public.is_super_admin() OR submitter_id = auth.uid());
 
 CREATE POLICY suggestions_delete ON public.suggestions
   FOR DELETE TO authenticated
@@ -857,6 +878,25 @@ CREATE POLICY activity_select ON public.activity_logs
 CREATE POLICY activity_insert ON public.activity_logs
   FOR INSERT TO authenticated
   WITH CHECK (user_id = auth.uid());
+
+-- 6.14 Web Push Subscriptions Policies
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS push_sub_select ON public.push_subscriptions;
+DROP POLICY IF EXISTS push_sub_insert ON public.push_subscriptions;
+DROP POLICY IF EXISTS push_sub_delete ON public.push_subscriptions;
+
+CREATE POLICY push_sub_select ON public.push_subscriptions
+  FOR SELECT TO authenticated
+  USING (user_id = auth.uid() OR public.is_super_admin());
+
+CREATE POLICY push_sub_insert ON public.push_subscriptions
+  FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY push_sub_delete ON public.push_subscriptions
+  FOR DELETE TO authenticated
+  USING (user_id = auth.uid() OR public.is_super_admin());
 
 -- ==============================================================================
 -- 7. SUPABASE STORAGE SETUP & STORAGE RLS POLICIES
