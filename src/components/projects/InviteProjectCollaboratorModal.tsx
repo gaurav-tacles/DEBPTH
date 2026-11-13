@@ -28,6 +28,7 @@ export const InviteProjectCollaboratorModal: React.FC<InviteProjectCollaboratorM
   const [expiresAtDate, setExpiresAtDate] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
@@ -56,7 +57,7 @@ export const InviteProjectCollaboratorModal: React.FC<InviteProjectCollaboratorM
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!email.trim()) {
@@ -64,6 +65,7 @@ export const InviteProjectCollaboratorModal: React.FC<InviteProjectCollaboratorM
       return;
     }
 
+    setIsSubmitting(true);
     try {
       const permissions: ProjectPermission = {
         canManageTasks,
@@ -72,7 +74,7 @@ export const InviteProjectCollaboratorModal: React.FC<InviteProjectCollaboratorM
         canManageMembers,
       };
 
-      const inv = createProjectInvitation(
+      const inv = await createProjectInvitation(
         project.id,
         email.trim(),
         projectRole,
@@ -86,6 +88,8 @@ export const InviteProjectCollaboratorModal: React.FC<InviteProjectCollaboratorM
       setExpiresAtDate(inv.expiresAt);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create project invitation.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -303,9 +307,10 @@ export const InviteProjectCollaboratorModal: React.FC<InviteProjectCollaboratorM
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 shadow-sm transition"
+                disabled={isSubmitting}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 shadow-sm transition disabled:opacity-50"
               >
-                Generate Collaborator Invite
+                {isSubmitting ? 'Generating Invite...' : 'Generate Collaborator Invite'}
               </button>
             </div>
           </form>

@@ -41,6 +41,7 @@ export const SettingsView: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; latencyMs?: number } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [schemaCopyNotice, setSchemaCopyNotice] = useState<string | null>(null);
   const [logs, setLogs] = useState(logger.getHistory());
 
   const [pushStatus, setPushStatus] = useState<WebPushStatus>({
@@ -108,15 +109,24 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleCopySchema = async () => {
+    setSchemaCopyNotice(null);
     try {
       const res = await fetch('/src/db/schema.sql');
+      const contentType = res.headers.get('content-type') || '';
       const text = await res.text();
-      navigator.clipboard.writeText(text);
+      if (!res.ok || contentType.includes('text/html') || text.trimStart().startsWith('<')) {
+        setSchemaCopyNotice(
+          'Source SQL files are excluded from the compiled production bundle. Copy src/db/schema.sql and src/db/migrations/20261111_security_remediation_and_webpush.sql directly from the repository.'
+        );
+        return;
+      }
+      await navigator.clipboard.writeText(text);
       setCopiedSql(true);
       setTimeout(() => setCopiedSql(false), 2000);
     } catch {
-      setCopiedSql(true);
-      setTimeout(() => setCopiedSql(false), 2000);
+      setSchemaCopyNotice(
+        'Could not copy schema automatically. Copy src/db/schema.sql directly from the repository.'
+      );
     }
   };
 
@@ -243,6 +253,12 @@ export const SettingsView: React.FC = () => {
             <p className="text-xs text-[#B4B0B0] leading-relaxed">
               Run this script directly in the Supabase SQL Editor. It provisions all tables (profiles, projects, project_members, tasks, milestones, documents, document_access_grants, suggestions, announcements, notifications), constraints, and full Row-Level Security policies.
             </p>
+
+            {schemaCopyNotice && (
+              <div className="rounded-xl border border-[#F59E0B]/40 bg-[#F59E0B]/10 p-2.5 text-[11px] text-[#F59E0B]">
+                {schemaCopyNotice}
+              </div>
+            )}
 
             <div className="rounded-xl bg-[#0F0B0A] p-3 border border-[#38302D] font-mono text-[11px] text-[#B4B0B0] max-h-56 overflow-y-auto">
               <pre className="text-[#B4B0B0] whitespace-pre-wrap">

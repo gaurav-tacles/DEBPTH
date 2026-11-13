@@ -19,12 +19,15 @@ async function runTests() {
   console.assert(hash1 === 'bbfcac479ae185baa069d949873434eac6cb1bbbd6f68dc42906224887da7778', 'Must match standard SHA-256 digest');
   console.log('✓ Test 2: Standard SHA-256 hashing consistency verified');
 
-  // Setup Admin profile in repository
-  const adminProfile = await workspaceRepo.ensureAuthenticatedProfile(
+  // Setup authoritative verified Admin profile in repository fixture
+  const rawAdminProfile = await workspaceRepo.ensureAuthenticatedProfile(
     'admin-123',
     'realgauravpatel@gmail.com',
     'Super Admin'
   );
+  const adminProfile = { ...rawAdminProfile, role: 'super_admin' as const };
+  workspaceRepo.saveDatabaseStateForTesting({ profiles: [adminProfile] });
+  workspaceRepo.addWorkspaceMember(adminProfile.id, 'super_admin');
 
   // Test 3: Create invitation
   const testEmail = 'developer@apex.test';

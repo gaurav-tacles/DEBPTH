@@ -119,7 +119,13 @@ export const SecureDeleteConfirmModal: React.FC<SecureDeleteConfirmModalProps> =
 
     try {
       const supabase = getSupabaseClient();
-      if (supabase && totpFactorId) {
+      if (supabase) {
+        if (!totpFactorId) {
+          throw new Error(
+            'Verified TOTP authenticator factor not found. Please enroll or re-verify MFA in Profile Settings.'
+          );
+        }
+
         // Step-up verification via Supabase MFA challenge
         const { data: challengeData, error: challengeErr } = await supabase.auth.mfa.challenge({
           factorId: totpFactorId,

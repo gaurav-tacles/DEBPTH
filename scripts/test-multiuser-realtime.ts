@@ -30,11 +30,14 @@ async function runTests() {
 
   // Test 2: Suggestions Shared Data Visibility (Multi-User Collaboration)
   const adminId = '00000000-0000-4000-8000-000000000099';
-  const superAdmin = await workspaceRepo.ensureAuthenticatedProfile(
+  const rawSuperAdmin = await workspaceRepo.ensureAuthenticatedProfile(
     adminId,
     'realgauravpatel@gmail.com',
     'Gaurav Patel (Super Admin)'
   );
+  const superAdmin = { ...rawSuperAdmin, role: 'super_admin' as const };
+  workspaceRepo.saveDatabaseStateForTesting({ profiles: [superAdmin] });
+  workspaceRepo.addWorkspaceMember(adminId, 'super_admin');
   assert(Boolean(superAdmin && superAdmin.role === 'super_admin'), 'Super Admin profile exists');
 
   // Create test member A and test member B

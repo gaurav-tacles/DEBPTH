@@ -4,6 +4,7 @@ import { UserProfile } from '../types';
 import { getSupabaseClient, isSupabaseConfigured, getStoredSupabaseConfig } from '../lib/supabase';
 import { workspaceRepo } from '../services/workspaceRepository';
 import { logger } from '../lib/logger';
+import { unsubscribeFromPush } from '../lib/webPush';
 
 interface AuthContextValue {
   user: User | null;
@@ -95,32 +96,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             authListener?.subscription.unsubscribe();
           };
         } else {
-          // Supabase not yet configured via env/storage: check local persistent session
-          const savedSession = localStorage.getItem(LOCAL_SESSION_KEY);
-          if (savedSession && mounted) {
-            try {
-              const parsed = JSON.parse(savedSession);
-              if (parsed && parsed.email) {
-                const userProfile = await workspaceRepo.ensureAuthenticatedProfile(
-                  parsed.id || 'usr-local-owner',
-                  parsed.email,
-                  parsed.fullName,
-                  parsed.avatarUrl
-                );
-                setUser({
-                  id: userProfile.id,
-                  email: userProfile.email,
-                  app_metadata: {},
-                  user_metadata: { full_name: userProfile.fullName },
-                  aud: 'authenticated',
-                  created_at: userProfile.createdAt,
-                } as unknown as User);
-                setProfile(userProfile);
-              }
-            } catch (err) {
-              localStorage.removeItem(LOCAL_SESSION_KEY);
-            }
-          }
+          // Fail closed when Supabase is not configured; never create local pseudo-sessions
+          localStorage.removeItem(LOCAL_SESSION_KEY);
         }
       } catch (err: unknown) {
         logger.error('AuthContext', 'Auth initialization error', err);
@@ -175,45 +152,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: true };
         }
       } else {
-        // Local developer session fallback (when cloud Supabase project credentials are not supplied)
-        if (!email.includes('@')) {
-          const err = 'Please enter a valid email address.';
-          setError(err);
-          setIsLoading(false);
-          return { success: false, error: err };
-        }
-        if (password.length < 6) {
-          const err = 'Password must be at least 6 characters.';
-          setError(err);
-          setIsLoading(false);
-          return { success: false, error: err };
-        }
-
-        const userId = `usr-${Math.random().toString(36).substr(2, 9)}`;
-        const prof = await workspaceRepo.ensureAuthenticatedProfile(
-          userId,
-          email.trim().toLowerCase(),
-          email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-        );
-
-        const localUserObj = {
-          id: prof.id,
-          email: prof.email,
-          fullName: prof.fullName,
-        };
-        localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(localUserObj));
-
-        setUser({
-          id: prof.id,
-          email: prof.email,
-          app_metadata: {},
-          user_metadata: { full_name: prof.fullName },
-          aud: 'authenticated',
-          created_at: prof.createdAt,
-        } as unknown as User);
-        setProfile(prof);
+        const err = 'Supabase authentication is not configured. Please configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.';
+        setError(err);
         setIsLoading(false);
-        return { success: true };
+        return { success: false, error: err };
       }
 
       setIsLoading(false);
@@ -242,18 +184,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setError(msg);
           setIsLoading(false);
           return { success: false, error: msg };
-        }
-
-        // If invitation token provided, verify local redemption first
-        if (inviteToken && inviteToken.trim()) {
-          try {
-            workspaceRepo.redeemInvitation(inviteToken.trim(), fullName, cleanEmail);
-          } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : 'Invalid invitation token.';
-            setError(msg);
-            setIsLoading(false);
-            return { success: false, error: msg };
-          }
         }
 
         const supabase = getSupabaseClient();
@@ -289,6 +219,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
               if (rpcErr) {
                 await supabase.auth.signOut().catch(() => {});
+                setUser(null);
+                setSession(null);
                 setError(rpcErr.message || 'Invitation redemption failed');
                 setIsLoading(false);
                 return { success: false, error: rpcErr.message || 'Invitation redemption failed' };
@@ -302,36 +234,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               undefined
             );
             setProfile(prof);
+            await workspaceRepo.syncWithSupabase(data.user.id);
             setIsLoading(false);
             return { success: true };
           }
         } else {
-          // Local signup
-          const userId = `usr-${Math.random().toString(36).substr(2, 9)}`;
-          const prof = await workspaceRepo.ensureAuthenticatedProfile(
-            userId,
-            email.trim().toLowerCase(),
-            fullName.trim()
-          );
-
-          const localUserObj = {
-            id: prof.id,
-            email: prof.email,
-            fullName: prof.fullName,
-          };
-          localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(localUserObj));
-
-          setUser({
-            id: prof.id,
-            email: prof.email,
-            app_metadata: {},
-            user_metadata: { full_name: prof.fullName },
-            aud: 'authenticated',
-            created_at: prof.createdAt,
-          } as unknown as User);
-          setProfile(prof);
+          const msg = 'Supabase authentication is required for registration. Please configure your Supabase credentials.';
+          setError(msg);
           setIsLoading(false);
-          return { success: true };
+          return { success: false, error: msg };
         }
 
         setIsLoading(false);
@@ -362,13 +273,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       return { success: true };
     } else {
-      return { success: true };
+      const msg = 'Supabase authentication is not configured.';
+      setError(msg);
+      return { success: false, error: msg };
     }
   }, []);
 
   // Sign Out
   const signOut = useCallback(async () => {
     try {
+      if (user?.id) {
+        await unsubscribeFromPush(user.id).catch(() => {});
+      }
       const supabase = getSupabaseClient();
       if (supabase) {
         await supabase.auth.signOut();
@@ -376,14 +292,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       logger.warn('AuthContext', 'Error during remote signout', e);
     } finally {
+      workspaceRepo.clearCache();
       localStorage.removeItem(LOCAL_SESSION_KEY);
+      localStorage.removeItem('debpth_push_subscribed');
+      localStorage.removeItem('debpth_push_endpoint');
       setUser(null);
       setSession(null);
       setProfile(null);
       setError(null);
       logger.info('AuthContext', 'User signed out. Cleared authenticated session.');
     }
-  }, []);
+  }, [user?.id]);
 
   const refreshProfile = useCallback(async () => {
     if (user?.id && user?.email) {

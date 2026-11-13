@@ -156,7 +156,7 @@ class WorkspaceRepository {
   isWorkspaceMember(userId?: string): boolean {
     if (!userId) return false;
     const user = this.getProfileById(userId);
-    if (user?.role === 'super_admin' || user?.email.toLowerCase() === 'realgauravpatel@gmail.com') {
+    if (user?.role === 'super_admin') {
       return true;
     }
     return (this.db.workspaceMembers || []).some((wm) => wm.userId === userId);
@@ -189,7 +189,7 @@ class WorkspaceRepository {
     });
   }
 
-  // Ensure authenticated user profile exists
+  // Ensure authenticated user profile exists (never asserts super_admin or mfaEnabled=true from client)
   async ensureAuthenticatedProfile(
     userId: string,
     email: string,
@@ -198,9 +198,8 @@ class WorkspaceRepository {
   ): Promise<UserProfile> {
     const supabase = getSupabaseClient();
     const normalizedEmail = email.trim().toLowerCase();
-    const isSuperAdminEmail = normalizedEmail === 'realgauravpatel@gmail.com';
 
-    // 1. Check if Supabase has this profile
+    // 1. Check authoritative profile in Supabase
     if (supabase) {
       try {
         const { data, error } = await supabase
@@ -215,15 +214,14 @@ class WorkspaceRepository {
             email: data.email,
             fullName: data.full_name,
             avatarUrl: data.avatar_url || avatarUrl,
-            role: data.role || (isSuperAdminEmail ? 'super_admin' : 'member'),
-            labels: data.labels || (isSuperAdminEmail ? ['Architecture', 'Security', 'Owner'] : ['Developer']),
+            role: data.role === 'super_admin' ? 'super_admin' : 'member',
+            labels: data.labels || ['Developer'],
             githubUsername: data.github_username,
             mfaEnabled: Boolean(data.mfa_enabled),
             createdAt: data.created_at || new Date().toISOString(),
             lastActiveAt: new Date().toISOString(),
           };
 
-          // Update local cache
           const existingLocal = this.db.profiles.find((p) => p.id === userId);
           if (existingLocal) {
             const updated = this.db.profiles.map((p) => (p.id === userId ? profile : p));
@@ -239,7 +237,7 @@ class WorkspaceRepository {
     }
 
     // 2. Check local store
-    const existing = this.db.profiles.find((p) => p.id === userId || p.email.toLowerCase() === email.toLowerCase());
+    const existing = this.db.profiles.find((p) => p.id === userId || p.email.toLowerCase() === normalizedEmail);
     if (existing) {
       const updatedProfile: UserProfile = {
         ...existing,
@@ -253,45 +251,41 @@ class WorkspaceRepository {
       return updatedProfile;
     }
 
-    // 3. Create fresh new profile for authenticated user
+    // 3. Create fresh member profile locally; authoritative role is provisioned server-side by DB triggers
     const newProfile: UserProfile = {
       id: userId,
-      email: email.toLowerCase(),
-      fullName: fullName || email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      email: normalizedEmail,
+      fullName: fullName || normalizedEmail.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
       avatarUrl: avatarUrl || undefined,
-      role: isSuperAdminEmail ? 'super_admin' : 'member',
-      labels: isSuperAdminEmail ? ['Architecture', 'Security', 'Owner'] : ['Developer'],
-      githubUsername: email.split('@')[0],
-      mfaEnabled: true,
+      role: 'member',
+      labels: ['Developer'],
+      githubUsername: normalizedEmail.split('@')[0],
+      mfaEnabled: false,
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
     };
 
-    // Save to local
-    const updatedMembers =
-      isSuperAdminEmail && !(this.db.workspaceMembers || []).some((wm) => wm.userId === userId)
-        ? [...(this.db.workspaceMembers || []), { userId, role: 'super_admin' as const, joinedAt: new Date().toISOString() }]
-        : this.db.workspaceMembers;
-
     this.saveDatabase({
       ...this.db,
       profiles: [...this.db.profiles, newProfile],
-      workspaceMembers: updatedMembers,
     });
 
-    // Save to Supabase if connected
+    // Save baseline member row to Supabase only if trigger has not created it yet (never escalate role)
     if (supabase) {
       try {
-        await supabase.from('profiles').upsert({
-          id: newProfile.id,
-          email: newProfile.email,
-          full_name: newProfile.fullName,
-          avatar_url: newProfile.avatarUrl,
-          role: newProfile.role,
-          labels: newProfile.labels,
-          github_username: newProfile.githubUsername,
-          mfa_enabled: newProfile.mfaEnabled,
-        });
+        await supabase.from('profiles').upsert(
+          {
+            id: newProfile.id,
+            email: newProfile.email,
+            full_name: newProfile.fullName,
+            avatar_url: newProfile.avatarUrl,
+            role: 'member',
+            labels: newProfile.labels,
+            github_username: newProfile.githubUsername,
+            mfa_enabled: false,
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
       } catch (e) {
         logger.warn('WorkspaceRepository', 'Could not upsert profile to Supabase', e);
       }
@@ -557,12 +551,58 @@ class WorkspaceRepository {
         logger.error('WorkspaceRepository', 'Error fetching document access grants from Supabase', grantErr);
       }
 
+      // 11.5 Sync authoritative workspace_members
+      const { data: remoteWorkspaceMembers, error: wmErr } = await supabase
+        .from('workspace_members')
+        .select('user_id, role, joined_at, invited_by');
+      let mappedWorkspaceMembers: WorkspaceMember[] = this.db.workspaceMembers || [];
+      if (!wmErr && remoteWorkspaceMembers !== null) {
+        mappedWorkspaceMembers = remoteWorkspaceMembers.map((wm) => ({
+          userId: wm.user_id,
+          role: wm.role === 'super_admin' ? 'super_admin' : 'member',
+          joinedAt: wm.joined_at,
+          invitedBy: wm.invited_by || undefined,
+        }));
+      } else if (wmErr) {
+        logger.error('WorkspaceRepository', 'Error fetching workspace members from Supabase', wmErr);
+      }
+
+      // 11.6 Sync invitations (explicitly excluding raw token column)
+      const { data: remoteInvitations, error: invErr } = await supabase
+        .from('invitations')
+        .select(
+          'id, email, role, token_hash, status, invited_by, initial_labels, assigned_project_ids, invited_project_role, project_role, expires_at, accepted_at, revoked_at, created_at'
+        )
+        .order('created_at', { ascending: false });
+      let mappedInvitations: Invitation[] = this.db.invitations;
+      if (!invErr && remoteInvitations !== null) {
+        mappedInvitations = remoteInvitations.map((inv) => ({
+          id: inv.id,
+          email: inv.email,
+          role: inv.role === 'super_admin' ? 'super_admin' : 'member',
+          tokenHash: inv.token_hash || undefined,
+          status: inv.status,
+          invitedBy: inv.invited_by,
+          initialLabels: inv.initial_labels || [],
+          assignedProjectIds: inv.assigned_project_ids || [],
+          invitedProjectRole: inv.invited_project_role || inv.project_role || undefined,
+          expiresAt: inv.expires_at,
+          acceptedAt: inv.accepted_at || undefined,
+          revokedAt: inv.revoked_at || undefined,
+          createdAt: inv.created_at,
+        }));
+      } else if (invErr) {
+        logger.error('WorkspaceRepository', 'Error fetching invitations from Supabase', invErr);
+      }
+
       // 12. Persist complete synchronized workspace state authoritatively
       this.saveDatabase({
         ...this.db,
         profiles: mappedProfiles,
+        workspaceMembers: mappedWorkspaceMembers,
         projects: mappedProjects,
         projectMembers: mappedMembers,
+        invitations: mappedInvitations,
         announcements: mappedAnnouncements,
         tasks: mappedTasks,
         milestones: mappedMilestones,
@@ -575,7 +615,7 @@ class WorkspaceRepository {
 
       logger.info(
         'WorkspaceRepository',
-        `Synced with Supabase: ${mappedProjects.length} projects, ${mappedAnnouncements.length} announcements, ${mappedSuggestions.length} suggestions`
+        `Synced with Supabase: ${mappedProjects.length} projects, ${mappedWorkspaceMembers.length} members, ${mappedAnnouncements.length} announcements, ${mappedSuggestions.length} suggestions`
       );
     } catch (err) {
       logger.error('WorkspaceRepository', 'Error syncing with Supabase', err);
@@ -839,6 +879,29 @@ class WorkspaceRepository {
     return this.getProjectById(projectId)!;
   }
 
+  async deleteProjectSecureAsync(projectId: string, actorEmail: string): Promise<boolean> {
+    const isEligible = actorEmail.trim().toLowerCase() === 'realgauravpatel@gmail.com';
+    const profile = this.getProfileByEmail(actorEmail);
+    if (!isEligible || profile?.role !== 'super_admin') {
+      logger.error('WorkspaceRepository', 'Unauthorized deletion attempt blocked', { actorEmail, projectId });
+      throw new Error('Unauthorized: Destructive operations require verified Super Admin privileges (realgauravpatel@gmail.com).');
+    }
+
+    const project = this.db.projects.find((p) => p.id === projectId);
+    if (!project) return false;
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const { error } = await supabase.rpc('secure_delete_project', { target_project_id: projectId });
+      if (error) {
+        logger.error('WorkspaceRepository', 'Server rejected secure project deletion', error);
+        throw new Error(error.message || 'Server rejected secure project deletion. Ensure MFA step-up verification succeeded.');
+      }
+    }
+
+    return this.applyLocalProjectDeletionCleanup(projectId, profile, project);
+  }
+
   deleteProjectSecure(projectId: string, actorEmail: string): boolean {
     const isEligible = actorEmail.trim().toLowerCase() === 'realgauravpatel@gmail.com';
     const profile = this.getProfileByEmail(actorEmail);
@@ -850,7 +913,25 @@ class WorkspaceRepository {
     const project = this.db.projects.find((p) => p.id === projectId);
     if (!project) return false;
 
-    // Cascading local cleanup: tasks, milestones, documents, grants, members, project
+    const removed = this.applyLocalProjectDeletionCleanup(projectId, profile, project);
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      Promise.resolve(
+        supabase.rpc('secure_delete_project', { target_project_id: projectId })
+      )
+        .then(({ error }) => {
+          if (error) {
+            logger.error('WorkspaceRepository', 'Supabase secure_delete_project RPC rejected deletion', error);
+          }
+        })
+        .catch((e: unknown) => logger.warn('WorkspaceRepository', 'Supabase secure_delete_project RPC error', e));
+    }
+
+    return removed;
+  }
+
+  private applyLocalProjectDeletionCleanup(projectId: string, profile: UserProfile, project: Project): boolean {
     const remainingTasks = this.db.tasks.filter((t) => t.projectId !== projectId);
     const remainingMilestones = this.db.milestones.filter((m) => m.projectId !== projectId);
     const projectDocIds = this.db.documents.filter((d) => d.projectId === projectId).map((d) => d.id);
@@ -860,7 +941,7 @@ class WorkspaceRepository {
     const remainingProjects = this.db.projects.filter((p) => p.id !== projectId);
 
     const auditEvent: ActivityEvent = {
-      id: `act-${Date.now()}`,
+      id: generateUuid(),
       projectId,
       userId: profile.id,
       action: 'project_deleted',
@@ -878,21 +959,6 @@ class WorkspaceRepository {
       projectMembers: remainingMembers,
       activityLogs: [auditEvent, ...this.db.activityLogs],
     });
-
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      Promise.resolve(
-        supabase.rpc('secure_delete_project', { target_project_id: projectId })
-      ).catch(() => {
-        Promise.all([
-          supabase.from('tasks').delete().eq('project_id', projectId),
-          supabase.from('milestones').delete().eq('project_id', projectId),
-          supabase.from('documents').delete().eq('project_id', projectId),
-          supabase.from('project_members').delete().eq('project_id', projectId),
-          supabase.from('projects').delete().eq('id', projectId),
-        ]).catch((e) => logger.warn('WorkspaceRepository', 'Supabase delete cascade warning', e));
-      });
-    }
 
     logger.info('WorkspaceRepository', `Project securely deleted: ${project.name} (${projectId})`);
     return true;
@@ -998,10 +1064,31 @@ class WorkspaceRepository {
     });
 
     const target = updated.find((pm) => pm.id === memberId)!;
+
+    const supabase = getSupabaseClient();
+    if (supabase && isValidUuid(memberId)) {
+      Promise.resolve(
+        supabase
+          .from('project_members')
+          .update({
+            role,
+            can_manage_tasks: permissions.canManageTasks,
+            can_upload_docs: permissions.canUploadDocs,
+            can_view_metrics: permissions.canViewMetrics,
+            can_manage_members: permissions.canManageMembers,
+          })
+          .eq('id', memberId)
+      )
+        .then(({ error }) => {
+          if (error) logger.warn('WorkspaceRepository', 'Notice on project_members update', error);
+        })
+        .catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not update project member in Supabase', e));
+    }
+
     return { ...target, user: this.getProfileById(target.userId) };
   }
 
-  removeProjectMember(memberId: string, actorId: string) {
+  removeProjectMember(memberId: string, _actorId: string) {
     const member = this.db.projectMembers.find((pm) => pm.id === memberId);
     if (!member) return;
 
@@ -1009,20 +1096,48 @@ class WorkspaceRepository {
       ...this.db,
       projectMembers: this.db.projectMembers.filter((pm) => pm.id !== memberId),
     });
+
+    const supabase = getSupabaseClient();
+    if (supabase && isValidUuid(memberId)) {
+      Promise.resolve(
+        supabase.from('project_members').delete().eq('id', memberId)
+      )
+        .then(({ error }) => {
+          if (error) logger.warn('WorkspaceRepository', 'Notice on project_members delete', error);
+        })
+        .catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not delete project member in Supabase', e));
+    }
   }
 
   // Invitations
-  getInvitations(): Invitation[] {
+  getInvitations(forUserId?: string): Invitation[] {
     const now = new Date();
-    // Return sanitized invitations without exposing raw token if tokenHash is used
-    return this.db.invitations.map((i) => {
-      const isExpired = new Date(i.expiresAt) <= now;
-      const status = i.revokedAt ? 'revoked' : i.acceptedAt ? 'accepted' : isExpired ? 'expired' : 'pending';
-      return {
-        ...i,
-        status,
-      };
-    });
+    const actor = forUserId ? this.getProfileById(forUserId) : undefined;
+    const isSuperAdmin = actor?.role === 'super_admin';
+    const managedProjectIds = forUserId
+      ? new Set(
+          this.db.projectMembers
+            .filter((pm) => pm.userId === forUserId && (pm.role === 'lead' || pm.permissions?.canManageMembers))
+            .map((pm) => pm.projectId)
+        )
+      : new Set<string>();
+
+    // Return sanitized invitations scoped to authorized viewer
+    return this.db.invitations
+      .filter((i) => {
+        if (!forUserId || isSuperAdmin) return true;
+        if (i.invitedBy === forUserId) return true;
+        if (actor && i.email.toLowerCase() === actor.email.toLowerCase()) return true;
+        return (i.assignedProjectIds || []).some((pid) => managedProjectIds.has(pid));
+      })
+      .map((i) => {
+        const isExpired = new Date(i.expiresAt) <= now;
+        const status = i.revokedAt ? 'revoked' : i.acceptedAt ? 'accepted' : isExpired ? 'expired' : 'pending';
+        return {
+          ...i,
+          status,
+        };
+      });
   }
 
   createInvitation(
@@ -1040,7 +1155,7 @@ class WorkspaceRepository {
 
     // Verify authorized inviter permissions
     const inviter = this.db.profiles.find((p) => p.id === invitedBy);
-    const isSuperAdmin = inviter?.role === 'super_admin' || inviter?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+    const isSuperAdmin = inviter?.role === 'super_admin';
 
     // Strictly prevent non-admins from inviting workspace super_admins or unauthorized projects
     const safeRole: UserRole = isSuperAdmin && role === 'super_admin' ? 'super_admin' : 'member';
@@ -1088,10 +1203,13 @@ class WorkspaceRepository {
       const dbPayload: Record<string, any> = {
         id: generatedId,
         email: newInv.email,
+        scope: validAssignedProjectIds.length === 1 && !isSuperAdmin ? 'project' : 'workspace',
+        project_id: validAssignedProjectIds.length === 1 && !isSuperAdmin ? validAssignedProjectIds[0] : null,
         role: newInv.role,
         token_hash: tokenHash, // Store ONLY cryptographic SHA-256 hash
         initial_labels: initialLabels,
         assigned_project_ids: validAssignedProjectIds,
+        project_role: invitedProjectRole,
         invited_project_role: invitedProjectRole,
         expires_at: newInv.expiresAt,
         status: 'pending',
@@ -1109,12 +1227,121 @@ class WorkspaceRepository {
     return newInv;
   }
 
+  async createInvitationAsync(
+    email: string,
+    role: UserRole,
+    initialLabels: string[],
+    assignedProjectIds: string[],
+    expiresInDays: number,
+    invitedBy: string,
+    invitedProjectRole: ProjectRole = 'collaborator',
+    projectPermissions?: ProjectMember['permissions'],
+    explicitScope?: 'workspace' | 'project'
+  ): Promise<Invitation> {
+    const rawToken = generateSecureToken();
+    const tokenHash = hashTokenSync(rawToken);
+    const cleanEmail = email.trim().toLowerCase();
+    const validAssignedProjectIds = (assignedProjectIds || []).filter(isValidUuid);
+
+    const inviter = this.db.profiles.find((p) => p.id === invitedBy);
+    const isSuperAdmin = inviter?.role === 'super_admin';
+    const safeRole: UserRole = isSuperAdmin && role === 'super_admin' ? 'super_admin' : 'member';
+
+    if (!isSuperAdmin) {
+      if (validAssignedProjectIds.length === 0) {
+        throw new Error('Only the Workspace Super Admin can issue open workspace invitations.');
+      }
+      for (const projId of validAssignedProjectIds) {
+        const membership = this.db.projectMembers.find((pm) => pm.projectId === projId && pm.userId === invitedBy);
+        if (!membership || (membership.role !== 'lead' && !membership.permissions?.canManageMembers)) {
+          throw new Error('You do not have permission to invite members to this project.');
+        }
+      }
+    }
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const useProjectRpc =
+        explicitScope === 'project' ||
+        (!isSuperAdmin && validAssignedProjectIds.length === 1);
+
+      let rpcData: any = null;
+      if (useProjectRpc && validAssignedProjectIds.length === 1) {
+        const { data, error } = await supabase.rpc('create_project_invitation', {
+          p_project_id: validAssignedProjectIds[0],
+          p_email: cleanEmail,
+          p_project_role: invitedProjectRole,
+          p_permissions: projectPermissions || {
+            canManageTasks: invitedProjectRole !== 'viewer',
+            canUploadDocs: invitedProjectRole !== 'viewer',
+            canViewMetrics: true,
+            canManageMembers: invitedProjectRole === 'lead',
+          },
+          p_expires_in_days: expiresInDays,
+          p_token: rawToken,
+          p_token_hash: tokenHash,
+        });
+        if (error) {
+          throw new Error(error.message || 'Failed to create project invitation on server.');
+        }
+        rpcData = data;
+      } else {
+        const { data, error } = await supabase.rpc('create_workspace_invitation', {
+          p_email: cleanEmail,
+          p_role: safeRole,
+          p_initial_labels: initialLabels,
+          p_assigned_project_ids: validAssignedProjectIds,
+          p_expires_in_days: expiresInDays,
+          p_token: rawToken,
+          p_token_hash: tokenHash,
+        });
+        if (error) {
+          throw new Error(error.message || 'Failed to create workspace invitation on server.');
+        }
+        rpcData = data;
+      }
+
+      const persistedInv: Invitation = {
+        id: rpcData?.id || generateUuid(),
+        email: cleanEmail,
+        role: safeRole,
+        token: rawToken,
+        tokenHash,
+        status: 'pending',
+        invitedBy,
+        initialLabels,
+        assignedProjectIds: validAssignedProjectIds,
+        invitedProjectRole,
+        expiresAt: rpcData?.expiresAt || new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString(),
+        createdAt: rpcData?.createdAt || new Date().toISOString(),
+      };
+
+      this.saveDatabase({
+        ...this.db,
+        invitations: [persistedInv, ...this.db.invitations],
+      });
+
+      logger.info('WorkspaceRepository', `Created server-persisted invitation for ${cleanEmail}`);
+      return persistedInv;
+    }
+
+    return this.createInvitation(
+      cleanEmail,
+      role,
+      initialLabels,
+      assignedProjectIds,
+      expiresInDays,
+      invitedBy,
+      invitedProjectRole
+    );
+  }
+
   revokeInvitation(invitationId: string, revokedBy: string): void {
     const inv = this.db.invitations.find((i) => i.id === invitationId);
     if (!inv) throw new Error('Invitation not found.');
 
     const revoker = this.db.profiles.find((p) => p.id === revokedBy);
-    const isSuperAdmin = revoker?.role === 'super_admin' || revoker?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+    const isSuperAdmin = revoker?.role === 'super_admin';
 
     if (!isSuperAdmin && inv.invitedBy !== revokedBy) {
       throw new Error('Only the Super Admin or original inviter can revoke this invitation.');
@@ -1135,16 +1362,72 @@ class WorkspaceRepository {
     });
 
     const supabase = getSupabaseClient();
-    if (supabase) {
+    if (supabase && isValidUuid(invitationId)) {
       Promise.resolve(
-        supabase
-          .from('invitations')
-          .update({ revoked_at: now, status: 'revoked' })
-          .eq('id', invitationId)
+        supabase.rpc('revoke_invitation', { p_invitation_id: invitationId })
       ).catch((e: unknown) => logger.warn('WorkspaceRepository', 'Could not revoke invitation in Supabase', e));
     }
 
     logger.info('WorkspaceRepository', `Revoked invitation ${invitationId} for ${inv.email}`);
+  }
+
+  async revokeInvitationAsync(invitationId: string, revokedBy: string): Promise<void> {
+    const inv = this.db.invitations.find((i) => i.id === invitationId);
+    if (!inv) throw new Error('Invitation not found.');
+
+    const revoker = this.db.profiles.find((p) => p.id === revokedBy);
+    const isSuperAdmin = revoker?.role === 'super_admin';
+    if (!isSuperAdmin && inv.invitedBy !== revokedBy) {
+      throw new Error('Only the Super Admin or original inviter can revoke this invitation.');
+    }
+    if (inv.acceptedAt) {
+      throw new Error('Cannot revoke an invitation that has already been accepted.');
+    }
+
+    const supabase = getSupabaseClient();
+    if (supabase && isValidUuid(invitationId)) {
+      const { error } = await supabase.rpc('revoke_invitation', { p_invitation_id: invitationId });
+      if (error) {
+        throw new Error(error.message || 'Failed to revoke invitation on server.');
+      }
+    }
+
+    const now = new Date().toISOString();
+    this.saveDatabase({
+      ...this.db,
+      invitations: this.db.invitations.map((i) =>
+        i.id === invitationId ? { ...i, revokedAt: now, status: 'revoked' as const } : i
+      ),
+    });
+    logger.info('WorkspaceRepository', `Revoked invitation ${invitationId} for ${inv.email}`);
+  }
+
+  async redeemInvitationAsync(
+    tokenOrHash: string,
+    fullName: string,
+    expectedEmail?: string,
+    explicitUserId?: string
+  ): Promise<UserProfile> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const cleanToken = tokenOrHash.trim();
+      const { error } = await supabase.rpc('redeem_invitation_atomic', {
+        p_token_hash: cleanToken,
+        p_user_full_name: fullName.trim(),
+      });
+      if (error) {
+        throw new Error(error.message || 'Failed to verify or redeem invitation token.');
+      }
+      if (explicitUserId) {
+        await this.syncWithSupabase(explicitUserId);
+        const synced = this.getProfileById(explicitUserId);
+        if (synced) return synced;
+      }
+      const existing = expectedEmail ? this.getProfileByEmail(expectedEmail) : undefined;
+      if (existing) return existing;
+    }
+
+    return this.redeemInvitation(tokenOrHash, fullName, expectedEmail, explicitUserId);
   }
 
   /**
@@ -1252,9 +1535,9 @@ class WorkspaceRepository {
       id: targetUserId,
       email: inv.email,
       fullName: resolvedFullName,
-      role: inv.email.toLowerCase() === 'realgauravpatel@gmail.com' ? 'super_admin' : 'member',
+      role: 'member',
       labels: inv.initialLabels && inv.initialLabels.length > 0 ? inv.initialLabels : ['Developer'],
-      mfaEnabled: true,
+      mfaEnabled: false,
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
     };
@@ -1280,7 +1563,7 @@ class WorkspaceRepository {
 
     const newWorkspaceMember: WorkspaceMember = {
       userId: targetUserId,
-      role: inv.email.toLowerCase() === 'realgauravpatel@gmail.com' ? 'super_admin' : 'member',
+      role: 'member',
       joinedAt: new Date().toISOString(),
       invitedBy: inv.invitedBy,
     };
@@ -1530,9 +1813,27 @@ class WorkspaceRepository {
     return { ...newDoc, uploader: this.getProfileById(newDoc.uploadedBy) };
   }
 
-  getDocumentGrants(documentId?: string): DocumentAccessGrant[] {
+  getDocumentGrants(documentId?: string, forUserId?: string): DocumentAccessGrant[] {
     let grants = this.db.documentGrants;
     if (documentId) grants = grants.filter((g) => g.documentId === documentId);
+
+    if (forUserId) {
+      const actor = this.getProfileById(forUserId);
+      const isSuperAdmin = actor?.role === 'super_admin';
+      if (!isSuperAdmin) {
+        const managedProjectIds = new Set(
+          this.db.projectMembers
+            .filter((pm) => pm.userId === forUserId && (pm.role === 'lead' || pm.permissions?.canManageMembers))
+            .map((pm) => pm.projectId)
+        );
+        grants = grants.filter((g) => {
+          if (g.userId === forUserId) return true;
+          const doc = this.db.documents.find((d) => d.id === g.documentId);
+          return Boolean(doc && managedProjectIds.has(doc.projectId));
+        });
+      }
+    }
+
     return grants.map((g) => ({
       ...g,
       user: this.getProfileById(g.userId),
@@ -1685,8 +1986,7 @@ class WorkspaceRepository {
   // Suggestions Center (Shared with authorized workspace and project members)
   getSuggestions(forUserId?: string): Suggestion[] {
     const actor = forUserId ? this.getProfileById(forUserId) : undefined;
-    const isSuperAdmin =
-      actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+    const isSuperAdmin = actor?.role === 'super_admin';
     const isMember = this.isWorkspaceMember(forUserId);
 
     let list = this.db.suggestions;
@@ -1801,8 +2101,7 @@ class WorkspaceRepository {
     if (!sug) throw new Error('Suggestion not found.');
 
     const actor = this.getProfileById(actorId);
-    const isSuperAdmin =
-      actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+    const isSuperAdmin = actor?.role === 'super_admin';
 
     if (!isSuperAdmin) {
       if (sug.submitterId !== actorId) {
@@ -1863,8 +2162,7 @@ class WorkspaceRepository {
 
     if (actorId) {
       const actor = this.getProfileById(actorId);
-      const isSuperAdmin =
-        actor?.role === 'super_admin' || actor?.email.toLowerCase() === 'realgauravpatel@gmail.com';
+      const isSuperAdmin = actor?.role === 'super_admin';
       if (!isSuperAdmin) {
         throw new Error('Unauthorized: Only Super Admin can modify administrative suggestion status.');
       }
@@ -2106,11 +2404,23 @@ class WorkspaceRepository {
     }
   }
 
-  getActivityLogs(projectId?: string): ActivityEvent[] {
+  getActivityLogs(projectId?: string, forUserId?: string): ActivityEvent[] {
     let logs = this.db.activityLogs;
     if (projectId) {
       logs = logs.filter((l) => l.projectId === projectId);
     }
+
+    if (forUserId) {
+      const actor = this.getProfileById(forUserId);
+      const isSuperAdmin = actor?.role === 'super_admin';
+      if (!isSuperAdmin) {
+        const accessibleProjectIds = new Set(this.getProjects(forUserId).map((p) => p.id));
+        logs = logs.filter(
+          (l) => l.userId === forUserId || (l.projectId && accessibleProjectIds.has(l.projectId))
+        );
+      }
+    }
+
     return logs.map((l) => ({
       ...l,
       user: this.getProfileById(l.userId),

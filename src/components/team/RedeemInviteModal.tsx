@@ -18,20 +18,24 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setIsSubmitting(true);
     try {
-      redeemInvitation(token.trim(), fullName.trim());
+      await redeemInvitation(token.trim(), fullName.trim());
       setSuccess(true);
       setTimeout(() => {
         onClose();
       }, 1500);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -75,7 +79,7 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
               <input
                 type="text"
                 required
-                placeholder="df_inv_..."
+                placeholder="ph_inv_..."
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 className="w-full rounded-xl border border-[#38302D] bg-[#0F0B0A] px-3 py-2 text-xs text-[#F4F8FF] placeholder:text-[#B4B0B0]/60 focus:border-[#8B5CF6] focus:outline-none font-mono"
@@ -104,9 +108,10 @@ export const RedeemInviteModal: React.FC<RedeemInviteModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED]"
+                disabled={isSubmitting}
+                className="rounded-lg bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED] disabled:opacity-50"
               >
-                Join Workspace
+                {isSubmitting ? 'Joining...' : 'Join Workspace'}
               </button>
             </div>
           </form>

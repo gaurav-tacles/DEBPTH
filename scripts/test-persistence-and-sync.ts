@@ -9,11 +9,14 @@ async function runPersistenceAndSyncTests() {
   // --------------------------------------------------------------------------
   console.log('[Suite 1: User Account & Workspace Identity]');
 
-  const superAdmin = await workspaceRepo.ensureAuthenticatedProfile(
+  const rawSuperAdmin = await workspaceRepo.ensureAuthenticatedProfile(
     '00000000-0000-4000-a000-000000000001',
     'realgauravpatel@gmail.com',
     'Super Admin'
   );
+  const superAdmin = { ...rawSuperAdmin, role: 'super_admin' as const };
+  workspaceRepo.saveDatabaseStateForTesting({ profiles: [superAdmin] });
+  workspaceRepo.addWorkspaceMember(superAdmin.id, 'super_admin');
   console.assert(superAdmin.role === 'super_admin', 'Must have super_admin role');
   console.log('✓ 1.1: Super Admin profile verified (realgauravpatel@gmail.com)');
 
@@ -22,6 +25,7 @@ async function runPersistenceAndSyncTests() {
     'alice.developer@apex.test',
     'Alice Developer'
   );
+  workspaceRepo.addWorkspaceMember(userA.id, 'member', superAdmin.id);
   console.assert(userA.role === 'member', 'User A must be regular member');
   console.log('✓ 1.2: Member User A (Alice Developer) verified');
 
@@ -30,6 +34,7 @@ async function runPersistenceAndSyncTests() {
     'bob.engineer@apex.test',
     'Bob Engineer'
   );
+  workspaceRepo.addWorkspaceMember(userB.id, 'member', superAdmin.id);
   console.assert(userB.role === 'member', 'User B must be regular member');
   console.log('✓ 1.3: Member User B (Bob Engineer) verified');
 

@@ -27,18 +27,22 @@ async function runDay3Tests() {
   // --------------------------------------------------------------------------
   console.log('\n[Suite 2: Secure Project Deletion & Cascading Cascade]');
 
-  // Setup Admin and standard Member
-  const admin = await workspaceRepo.ensureAuthenticatedProfile(
+  // Setup authoritative verified Admin and standard Member in fixture
+  const rawAdmin = await workspaceRepo.ensureAuthenticatedProfile(
     'adm-001',
     'realgauravpatel@gmail.com',
     'Super Admin'
   );
+  const admin = { ...rawAdmin, role: 'super_admin' as const };
 
   const member = await workspaceRepo.ensureAuthenticatedProfile(
     'mem-001',
     'unauthorized_member@test.com',
     'Bob Developer'
   );
+  workspaceRepo.saveDatabaseStateForTesting({ profiles: [admin, member] });
+  workspaceRepo.addWorkspaceMember(admin.id, 'super_admin');
+  workspaceRepo.addWorkspaceMember(member.id, 'member', admin.id);
 
   // Create a test project with child items (tasks, documents, members, milestones)
   const testProject = await workspaceRepo.createProject(

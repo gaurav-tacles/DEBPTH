@@ -206,7 +206,7 @@ export const AuthScreen: React.FC = () => {
       // 3. If Supabase is not configured (offline / local dev mode)
       if (!hasConfiguredSupabase) {
         try {
-          redeemInvitation(cleanToken, fullName.trim(), email.trim());
+          await redeemInvitation(cleanToken, fullName.trim(), email.trim());
           setSuccessMessage('Invitation redeemed successfully! Workspace access granted.');
         } catch (repoErr: unknown) {
           setError(repoErr instanceof Error ? repoErr.message : 'Failed to redeem invitation.');

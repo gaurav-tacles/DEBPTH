@@ -21,6 +21,7 @@ import { workspaceRepo } from '../services/workspaceRepository';
 import { logger } from '../lib/logger';
 import { getSupabaseClient } from '../lib/supabase';
 import { useRealtimeWorkspace } from '../hooks/useRealtimeWorkspace';
+import { unsubscribeFromPush } from '../lib/webPush';
 
 interface WorkspaceContextValue {
   currentUser: UserProfile | null;
@@ -72,16 +73,16 @@ interface WorkspaceContextValue {
     assignedProjectIds: string[],
     expiresInDays: number,
     invitedProjectRole?: ProjectRole
-  ) => Invitation;
+  ) => Promise<Invitation>;
   createProjectInvitation: (
     projectId: string,
     email: string,
     projectRole: ProjectRole,
     permissions?: ProjectMember['permissions'],
     expiresInDays?: number
-  ) => Invitation;
-  revokeInvitation: (invitationId: string) => void;
-  redeemInvitation: (token: string, fullName: string, expectedEmail?: string) => UserProfile;
+  ) => Promise<Invitation>;
+  revokeInvitation: (invitationId: string) => Promise<void>;
+  redeemInvitation: (token: string, fullName: string, expectedEmail?: string) => Promise<UserProfile>;
   createTask: (data: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>) => Task;
   updateTask: (id: string, updates: Partial<Task>) => Task;
   deleteTask: (id: string) => void;
@@ -237,6 +238,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setIsPasswordRecovery(false);
           localStorage.removeItem(AUTH_TOKEN_KEY);
           localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+          localStorage.removeItem('debpth_push_subscribed');
+          localStorage.removeItem('debpth_push_endpoint');
           refreshWorkspace();
         }
       });
@@ -463,19 +466,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [refreshWorkspace]
   );
 
-  const signInAsPersona = useCallback((userId: string) => {
-    const target = workspaceRepo.getProfileById(userId);
-    if (target) {
-      setCurrentUserId(userId);
-      setIsAuthenticated(true);
-      localStorage.setItem(AUTH_TOKEN_KEY, 'true');
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, userId);
-      logger.info('Auth', `Signed in as persona ${target.fullName} (${target.role})`);
-      setTick((t) => t + 1);
-    }
+  const signInAsPersona = useCallback((_userId: string) => {
+    logger.warn('Auth', 'Blocked attempt to invoke disabled client-side persona switcher');
+    throw new Error('Unauthorized: Client-side persona switching is disabled. Sign in with Supabase Auth.');
   }, []);
 
   const signOut = useCallback(async () => {
+    if (currentUserId) {
+      await unsubscribeFromPush(currentUserId).catch(() => {});
+    }
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
@@ -491,9 +490,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsPasswordRecovery(false);
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+    localStorage.removeItem('debpth_push_subscribed');
+    localStorage.removeItem('debpth_push_endpoint');
     refreshWorkspace();
     logger.info('Auth', 'User successfully signed out');
-  }, [refreshWorkspace]);
+  }, [currentUserId, refreshWorkspace]);
 
   const currentUser = useMemo(() => {
     if (!isAuthenticated || !currentUserId) return null;
@@ -555,9 +556,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [activeProjectId, currentUserId, isAuthenticated, tick]);
 
   const documentGrants = useMemo(() => {
-    if (!isAuthenticated) return [];
-    return workspaceRepo.getDocumentGrants();
-  }, [isAuthenticated, tick]);
+    if (!isAuthenticated || !currentUserId) return [];
+    return workspaceRepo.getDocumentGrants(undefined, currentUserId);
+  }, [currentUserId, isAuthenticated, tick]);
 
   const suggestions = useMemo(() => {
     if (!isAuthenticated || !currentUserId) return [];
@@ -575,29 +576,24 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [currentUserId, isAuthenticated, tick]);
 
   const invitations = useMemo(() => {
-    if (!isAuthenticated) return [];
-    return workspaceRepo.getInvitations();
-  }, [isAuthenticated, tick]);
+    if (!isAuthenticated || !currentUserId) return [];
+    return workspaceRepo.getInvitations(currentUserId);
+  }, [currentUserId, isAuthenticated, tick]);
 
   const activityLogs = useMemo(() => {
-    if (!isAuthenticated) return [];
-    return workspaceRepo.getActivityLogs(activeProjectId || undefined);
-  }, [activeProjectId, isAuthenticated, tick]);
+    if (!isAuthenticated || !currentUserId) return [];
+    return workspaceRepo.getActivityLogs(activeProjectId || undefined, currentUserId);
+  }, [activeProjectId, currentUserId, isAuthenticated, tick]);
 
   const ideas = useMemo(() => {
     if (!isAuthenticated || !currentUserId) return [];
     return workspaceRepo.getIdeas(currentUserId);
   }, [currentUserId, isAuthenticated, tick]);
 
-  // Switch active persona
-  const switchUser = useCallback((userId: string) => {
-    const target = workspaceRepo.getProfileById(userId);
-    if (target) {
-      setCurrentUserId(userId);
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, userId);
-      logger.info('WorkspaceContext', `Switched active user to ${target.fullName} (${target.role})`);
-      setTick((t) => t + 1);
-    }
+  // Switch active persona (disabled in Zero-Trust production mode)
+  const switchUser = useCallback((_userId: string) => {
+    logger.warn('WorkspaceContext', 'Blocked attempt to invoke disabled user switcher');
+    throw new Error('Unauthorized: Client-side user switching is disabled.');
   }, []);
 
   // Project Actions
@@ -625,7 +621,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!currentUser?.email) {
         throw new Error('Authenticated session required to delete project.');
       }
-      const success = workspaceRepo.deleteProjectSecure(projectId, currentUser.email);
+      const success = await workspaceRepo.deleteProjectSecureAsync(projectId, currentUser.email);
       if (success) {
         refreshWorkspace();
         if (activeProjectId === projectId) {
@@ -663,7 +659,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Invitations
   const createInvitation = useCallback(
-    (
+    async (
       email: string,
       role: UserRole,
       initialLabels: string[],
@@ -671,7 +667,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       expiresInDays: number,
       invitedProjectRole?: ProjectRole
     ) => {
-      const inv = workspaceRepo.createInvitation(
+      const inv = await workspaceRepo.createInvitationAsync(
         email,
         role,
         initialLabels,
@@ -687,21 +683,23 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const createProjectInvitation = useCallback(
-    (
+    async (
       projectId: string,
       email: string,
       projectRole: ProjectRole = 'collaborator',
-      _permissions?: ProjectMember['permissions'],
+      permissions?: ProjectMember['permissions'],
       expiresInDays: number = 7
     ) => {
-      const inv = workspaceRepo.createInvitation(
+      const inv = await workspaceRepo.createInvitationAsync(
         email,
         'member',
         [],
         [projectId],
         expiresInDays,
         currentUserId,
-        projectRole
+        projectRole,
+        permissions,
+        'project'
       );
       refreshWorkspace();
       return inv;
@@ -710,20 +708,25 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const revokeInvitation = useCallback(
-    (invitationId: string) => {
-      workspaceRepo.revokeInvitation(invitationId, currentUserId);
+    async (invitationId: string) => {
+      await workspaceRepo.revokeInvitationAsync(invitationId, currentUserId);
       refreshWorkspace();
     },
     [currentUserId, refreshWorkspace]
   );
 
   const redeemInvitation = useCallback(
-    (token: string, fullName: string, expectedEmail?: string) => {
-      const profile = workspaceRepo.redeemInvitation(token, fullName, expectedEmail);
+    async (token: string, fullName: string, expectedEmail?: string) => {
+      const profile = await workspaceRepo.redeemInvitationAsync(
+        token,
+        fullName,
+        expectedEmail || currentUser?.email,
+        currentUserId || undefined
+      );
       refreshWorkspace();
       return profile;
     },
-    [refreshWorkspace]
+    [currentUser?.email, currentUserId, refreshWorkspace]
   );
 
   // Tasks
@@ -897,11 +900,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [currentUserId, refreshWorkspace]
   );
 
-  // Reset Data
+  // Reset Data (Super Admin only)
   const resetWorkspaceData = useCallback(() => {
+    if (!isSuperAdmin) {
+      logger.warn('WorkspaceContext', 'Unauthorized attempt to clear workspace cache blocked');
+      throw new Error('Unauthorized: Only the Super Admin can reset local workspace cache.');
+    }
     workspaceRepo.resetToSampleData();
     refreshWorkspace();
-  }, [refreshWorkspace]);
+  }, [isSuperAdmin, refreshWorkspace]);
 
   return (
     <WorkspaceContext.Provider

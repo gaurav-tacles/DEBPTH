@@ -6,7 +6,6 @@
 import { getVapidPublicKey, urlBase64ToUint8Array } from './vapid';
 import { getSupabaseClient } from './supabase';
 import { logger } from './logger';
-import { generateUuid } from './crypto';
 
 export type PushPermissionState = 'default' | 'granted' | 'denied' | 'unsupported';
 
@@ -97,27 +96,39 @@ export async function subscribeToPush(userId: string): Promise<{ success: boolea
       ? btoa(String.fromCharCode.apply(null, Array.from(new Uint8Array(rawAuth))))
       : '';
 
-    // Save to Supabase
+    // Save to Supabase (fail closed so UI never claims active push without server persistence)
     const supabase = getSupabaseClient();
-    if (supabase) {
-      const { error } = await supabase.from('push_subscriptions').upsert(
-        {
-          id: generateUuid(),
-          user_id: userId,
-          endpoint: subscription.endpoint,
-          p256dh,
-          auth,
-          user_agent: navigator.userAgent.slice(0, 500),
-        },
-        { onConflict: 'user_id,endpoint' }
-      );
-
-      if (error) {
-        logger.warn('WebPush', 'Failed to store push subscription in Supabase', error);
-      }
+    if (!supabase) {
+      localStorage.removeItem('debpth_push_subscribed');
+      localStorage.removeItem('debpth_push_endpoint');
+      return {
+        success: false,
+        error: 'Supabase is not configured. Push subscription cannot be persisted for background delivery.',
+      };
     }
 
-    // Store in localStorage for fast local state retrieval
+    const { error } = await supabase.from('push_subscriptions').upsert(
+      {
+        user_id: userId,
+        endpoint: subscription.endpoint,
+        p256dh,
+        auth,
+        user_agent: navigator.userAgent.slice(0, 500),
+      },
+      { onConflict: 'user_id,endpoint' }
+    );
+
+    if (error) {
+      logger.warn('WebPush', 'Failed to store push subscription in Supabase', error);
+      localStorage.removeItem('debpth_push_subscribed');
+      localStorage.removeItem('debpth_push_endpoint');
+      return {
+        success: false,
+        error: `Failed to save push subscription: ${error.message}`,
+      };
+    }
+
+    // Store in localStorage only after Supabase persistence is confirmed
     localStorage.setItem('debpth_push_subscribed', 'true');
     localStorage.setItem('debpth_push_endpoint', subscription.endpoint);
 
@@ -143,11 +154,14 @@ export async function unsubscribeFromPush(userId: string): Promise<{ success: bo
       await subscription.unsubscribe();
 
       const supabase = getSupabaseClient();
-      if (supabase) {
-        await supabase
+      if (supabase && userId) {
+        const { error } = await supabase
           .from('push_subscriptions')
           .delete()
           .match({ user_id: userId, endpoint });
+        if (error) {
+          logger.warn('WebPush', 'Failed to remove push subscription record from Supabase', error);
+        }
       }
     }
 

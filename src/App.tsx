@@ -23,7 +23,60 @@ import { AboutCreatorView } from './components/about/AboutCreatorView';
 import { ProfileView } from './components/profile/ProfileView';
 import { AuthScreen } from './components/auth/AuthScreen';
 import { LoadingScreen } from './components/auth/LoadingScreen';
-import { Brain } from 'lucide-react';
+import { Brain, AlertTriangle, RefreshCw } from 'lucide-react';
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class WorkspaceErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'An unexpected rendering error occurred.',
+    };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#0F0B0A] text-[#F4F8FF] flex items-center justify-center p-4 font-['Geist',sans-serif]">
+          <div className="w-full max-w-md rounded-2xl border border-[#38302D] bg-[#191311] p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3 text-[#FB7185]">
+              <AlertTriangle className="w-6 h-6 shrink-0" />
+              <div>
+                <h1 className="text-base font-bold text-[#F4F8FF]">Workspace Recovery Needed</h1>
+                <p className="text-xs text-[#B4B0B0]">DEBPTH encountered an unexpected view error.</p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-[#38302D] bg-[#0F0B0A] p-3 text-xs font-mono text-[#B4B0B0] break-words">
+              {this.state.errorMessage}
+            </div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] px-4 py-2.5 text-xs font-semibold text-white transition cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Reload Workspace</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 const WorkspaceShell: React.FC = () => {
   // Default selected navigation item after authenticated is 'overview' or 'team'
@@ -170,8 +223,10 @@ const ProtectedAppRouter: React.FC = () => {
 
 export default function App() {
   return (
-    <WorkspaceProvider>
-      <ProtectedAppRouter />
-    </WorkspaceProvider>
+    <WorkspaceErrorBoundary>
+      <WorkspaceProvider>
+        <ProtectedAppRouter />
+      </WorkspaceProvider>
+    </WorkspaceErrorBoundary>
   );
 }

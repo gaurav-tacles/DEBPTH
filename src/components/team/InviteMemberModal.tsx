@@ -26,7 +26,7 @@ interface InviteMemberModalProps {
     assignedProjectIds: string[],
     expiresInDays: number,
     invitedProjectRole?: ProjectRole
-  ) => { token?: string };
+  ) => { token?: string } | Promise<{ token?: string }>;
 }
 
 export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
@@ -49,10 +49,11 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedToken, setCopiedToken] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!email.trim()) {
@@ -65,8 +66,9 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
       .map((l) => l.trim())
       .filter(Boolean);
 
+    setIsSubmitting(true);
     try {
-      const inv = onInvite(
+      const inv = await onInvite(
         email.trim().toLowerCase(),
         role,
         labels,
@@ -79,6 +81,8 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create invitation.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -354,9 +358,10 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="rounded-xl bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED] shadow-sm transition cursor-pointer"
+                disabled={isSubmitting}
+                className="rounded-xl bg-[#8B5CF6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#7C3AED] shadow-sm transition cursor-pointer disabled:opacity-50"
               >
-                Generate Secure Invitation
+                {isSubmitting ? 'Generating Invitation...' : 'Generate Secure Invitation'}
               </button>
             </div>
           </form>

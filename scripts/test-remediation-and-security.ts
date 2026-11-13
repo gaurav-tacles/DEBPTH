@@ -40,11 +40,27 @@ async function runSecurityRemediationTests() {
   const memberAId = '00000000-0000-4000-8000-000000000001';
   const memberBId = '00000000-0000-4000-8000-000000000002';
 
-  const superAdmin = await workspaceRepo.ensureAuthenticatedProfile(
+  const rawAdminProfile = await workspaceRepo.ensureAuthenticatedProfile(
     adminId,
     'realgauravpatel@gmail.com',
     'Gaurav Patel (Super Admin)'
   );
+  assert(
+    rawAdminProfile.role === 'member' && rawAdminProfile.mfaEnabled === false,
+    'Client ensureAuthenticatedProfile fails closed (never self-escalates to super_admin or fakes mfaEnabled=true)'
+  );
+
+  // Simulate authoritative server-verified Super Admin profile from Supabase
+  const superAdmin = {
+    ...rawAdminProfile,
+    role: 'super_admin' as const,
+    labels: ['Architecture', 'Security', 'Owner'],
+  };
+  workspaceRepo.saveDatabaseStateForTesting({
+    profiles: [superAdmin],
+  });
+  workspaceRepo.addWorkspaceMember(adminId, 'super_admin');
+
   await workspaceRepo.ensureAuthenticatedProfile(memberAId, 'member.a@debpth.test', 'Member A');
   await workspaceRepo.ensureAuthenticatedProfile(memberBId, 'member.b@debpth.test', 'Member B');
   workspaceRepo.addWorkspaceMember(memberAId, 'member', adminId);
@@ -240,7 +256,7 @@ async function runSecurityRemediationTests() {
   );
 
   if (typeof localStorage !== 'undefined') {
-    const storedJson = localStorage.getItem('projecthub_workspace_v1');
+    const storedJson = localStorage.getItem('projecthub_workspace_v3');
     if (storedJson) {
       const parsed = JSON.parse(storedJson);
       const storedInv = parsed.invitations?.find((i: any) => i.id === newInvitation.id);
@@ -407,8 +423,8 @@ async function runSecurityRemediationTests() {
     'Push update policy is scoped FOR UPDATE TO authenticated'
   );
   assert(
-    migrationSql.includes('USING (user_id = auth.uid())'),
-    'Push update policy enforces USING (user_id = auth.uid())'
+    migrationSql.includes('USING (user_id = auth.uid() AND public.is_workspace_member())'),
+    'Push update policy enforces USING (user_id = auth.uid() AND public.is_workspace_member())'
   );
 
   const schemaSql = fs.readFileSync('src/db/schema.sql', 'utf8');
@@ -458,6 +474,8 @@ async function runSecurityRemediationTests() {
   // -------------------------------------------------------------
   // 9. EDGE FUNCTION WEBHOOK AUTHENTICATION & REPLAY PROTECTION
   // -------------------------------------------------------------
+  // 9. EDGE FUNCTION AUTHENTICATION, CONSTANT-TIME COMPARE & DURABLE REPLAY PROTECTION
+  // -------------------------------------------------------------
   console.log('\nSection 9: Edge Function Authentication, Constant-Time Compare & Replay Protection');
 
   const edgeFuncCode = fs.readFileSync('supabase/functions/send-push/index.ts', 'utf8');
@@ -470,16 +488,484 @@ async function runSecurityRemediationTests() {
     'Edge function uses constant-time comparison to prevent timing attacks'
   );
   assert(
-    edgeFuncCode.includes('processedEvents') || edgeFuncCode.includes('processedRecordIds'),
-    'Edge function implements replay suppression / deduplication cache'
+    edgeFuncCode.includes('claimDurableEvent') &&
+      edgeFuncCode.includes('finalizeDurableEvent') &&
+      edgeFuncCode.includes('processed_webhook_events'),
+    'Edge function implements two-phase durable database-backed idempotency (processed_webhook_events)'
   );
   assert(
-    edgeFuncCode.includes('MAX_PAYLOAD_BYTES') || edgeFuncCode.includes('16 * 1024'),
-    'Edge function enforces strict payload size limit (16KB)'
+    edgeFuncCode.includes('isServiceRoleAuth') && edgeFuncCode.includes('Forbidden: Direct notification dispatch requires Service Role authority'),
+    'Direct notification dispatch is strictly restricted to Service Role authority (cannot target arbitrary users)'
+  );
+  assert(
+    edgeFuncCode.includes('MAX_PAYLOAD_BYTES') && edgeFuncCode.includes('new TextEncoder().encode(rawBody).byteLength'),
+    'Edge function enforces strict 16KB payload size limit on actual UTF-8 body bytes'
+  );
+  assert(
+    edgeFuncCode.includes('sanitizeRelativeUrl') && edgeFuncCode.includes('startsWith("//")'),
+    'Edge function sanitizes notification target URLs against protocol-relative open redirects'
+  );
+  assert(
+    edgeFuncCode.includes('status: 503') && edgeFuncCode.includes('finalizeDurableEvent(supabase, eventId, "failed"'),
+    'Edge function marks all-transient failures as retryable and returns HTTP 503'
+  );
+  assert(
+    !edgeFuncCode.includes('details: dbError.message'),
+    'Edge function does not leak internal database error details in HTTP 500 responses'
   );
   assert(
     edgeFuncCode.includes('404') && edgeFuncCode.includes('410'),
     'Edge function prunes expired push subscriptions on 404/410 HTTP response'
+  );
+
+  // -------------------------------------------------------------
+  // 10. VAPID KEY PAIR MATHEMATICAL DERIVATION & INTEGRITY
+  // -------------------------------------------------------------
+  console.log('\nSection 10: VAPID Key Pair Mathematical Validation');
+
+  const cryptoMod = await import('node:crypto');
+  const ecdhInstance = cryptoMod.createECDH('prime256v1');
+  ecdhInstance.generateKeys();
+  const testPubKey = ecdhInstance.getPublicKey('base64url');
+  const testPrivKey = ecdhInstance.getPrivateKey('base64url');
+
+  const verifyingEcdh = cryptoMod.createECDH('prime256v1');
+  verifyingEcdh.setPrivateKey(Buffer.from(testPrivKey, 'base64url'));
+  const derivedPubKey = verifyingEcdh.getPublicKey('base64url');
+
+  assert(
+    testPubKey === derivedPubKey,
+    'VAPID ECDSA prime256v1 mathematical key pair derivation verified (private key derives matching public key)'
+  );
+
+  // -------------------------------------------------------------
+  // 11. ZERO-TRUST SQL, SERVICE WORKER & SCOPING VERIFICATION
+  // -------------------------------------------------------------
+  console.log('\nSection 11: Zero-Trust SQL, Service Worker & Repository Scoping');
+
+  assert(
+    schemaSql.includes('u.email_confirmed_at IS NOT NULL') &&
+      migrationSql.includes('u.email_confirmed_at IS NOT NULL'),
+    'is_super_admin() and Super Admin provisioning require verified auth.users.email_confirmed_at'
+  );
+  assert(
+    schemaSql.includes('trg_enforce_profile_role_immutability') &&
+      migrationSql.includes('trg_enforce_profile_role_immutability') &&
+      schemaSql.includes('on_auth_user_verified') &&
+      migrationSql.includes('on_auth_user_verified'),
+    'Profile role immutability and email-verification promotion triggers are present in schema and migration'
+  );
+  assert(
+    !schemaSql.includes('CREATE POLICY profiles_select ON public.profiles\n  FOR SELECT TO authenticated\n  USING (true)'),
+    'profiles_select no longer uses permissive USING (true)'
+  );
+  assert(
+    schemaSql.includes('DROP POLICY IF EXISTS invitations_read_for_redemption ON public.invitations;') &&
+      migrationSql.includes('DROP POLICY IF EXISTS invitations_read_for_redemption ON public.invitations;'),
+    'Legacy invitations_read_for_redemption policy is explicitly dropped'
+  );
+  assert(
+    schemaSql.includes('claim_webhook_event') &&
+      schemaSql.includes('GRANT EXECUTE ON FUNCTION public.claim_webhook_event(TEXT) TO service_role;') &&
+      migrationSql.includes('GRANT EXECUTE ON FUNCTION public.complete_webhook_event(TEXT, TEXT, TEXT) TO service_role;'),
+    'Durable idempotency claim/complete RPCs are restricted to service_role only'
+  );
+
+  const swCode = fs.readFileSync('public/sw-push-handler.js', 'utf8');
+  assert(
+    swCode.includes('resolveSafeAppUrl') && swCode.includes('resolved.origin !== self.location.origin'),
+    'Service Worker restricts notification click targets strictly to same-origin http/https URLs'
+  );
+
+  const repoCode = fs.readFileSync('src/services/workspaceRepository.ts', 'utf8');
+  assert(
+    repoCode.includes(".from('workspace_members')") && repoCode.includes('workspaceMembers: mappedWorkspaceMembers'),
+    'workspaceRepository.syncWithSupabase fetches and persists authoritative workspace_members'
+  );
+
+  // Scoped invitation visibility: uninvolved invitee B cannot see Member A / unrelated project invitation
+  const scopedInvsForMemberB = workspaceRepo.getInvitations(memberBId);
+  assert(
+    !scopedInvsForMemberB.some((i) => i.id === inviteForEngineer.id),
+    'Scoped getInvitations hides unrelated workspace invitations from non-admin members'
+  );
+
+  // -------------------------------------------------------------
+  // 12. BEHAVIORAL HTTP HANDLER TESTS FOR supabase/functions/send-push/index.ts
+  // -------------------------------------------------------------
+  console.log('\nSection 12: Edge Function send-push Real HTTP Handler Execution Tests');
+
+  const esbuild = await import('esbuild');
+  const rawEdgeSource = fs.readFileSync('supabase/functions/send-push/index.ts', 'utf8');
+  const strippedEdgeSource = rawEdgeSource
+    .replace('import { createClient } from "npm:@supabase/supabase-js@2";', 'const createClient = __TEST_CREATE_CLIENT__;')
+    .replace('import webpush from "npm:web-push@3.6.7";', 'const webpush = __TEST_WEBPUSH__;');
+
+  const compiledEdge = esbuild.transformSync(strippedEdgeSource, {
+    loader: 'ts',
+    format: 'cjs',
+    target: 'es2022',
+  });
+
+  type DurableEventRow = {
+    event_id: string;
+    status: 'processing' | 'completed' | 'failed';
+    last_error?: string | null;
+  };
+
+  function createEdgeHarness(initialEnv: Record<string, string | undefined>) {
+    const durableEvents = new Map<string, DurableEventRow>();
+    let subscriptions: Array<{ id: string; user_id: string; endpoint: string; p256dh: string; auth: string }> = [
+      {
+        id: 'sub-live-1',
+        user_id: memberAId,
+        endpoint: 'https://fcm.googleapis.com/fcm/send/live-endpoint-1',
+        p256dh: 'BTestP256dhKey',
+        auth: 'TestAuthSecret',
+      },
+    ];
+    const sentPushCalls: Array<{ endpoint: string; payload: any }> = [];
+    let nextPushBehaviour: Array<{ ok: boolean; statusCode?: number; message?: string }> = [];
+
+    const mockSupabaseClient = {
+      rpc: async (fnName: string, params: Record<string, any>) => {
+        if (fnName === 'claim_webhook_event') {
+          const existing = durableEvents.get(params.p_event_id);
+          if (!existing) {
+            durableEvents.set(params.p_event_id, { event_id: params.p_event_id, status: 'processing' });
+            return { data: 'claimed', error: null };
+          }
+          if (existing.status === 'failed') {
+            existing.status = 'processing';
+            return { data: 'reclaimed', error: null };
+          }
+          return {
+            data: existing.status === 'completed' ? 'already_completed' : 'in_progress',
+            error: null,
+          };
+        }
+        if (fnName === 'complete_webhook_event') {
+          const existing = durableEvents.get(params.p_event_id);
+          if (existing) {
+            existing.status = params.p_status;
+            existing.last_error = params.p_error ?? null;
+          }
+          return { data: null, error: null };
+        }
+        return { data: null, error: null };
+      },
+      from: (table: string) => {
+        if (table === 'push_subscriptions') {
+          return {
+            select: () => ({
+              eq: async (_col: string, val: string) => ({
+                data: subscriptions.filter((s) => s.user_id === val),
+                error: null,
+              }),
+            }),
+            delete: () => ({
+              in: async (_col: string, ids: string[]) => {
+                const idSet = new Set(ids);
+                subscriptions = subscriptions.filter((s) => !idSet.has(s.id));
+                return { error: null };
+              },
+            }),
+          };
+        }
+        return {
+          select: () => ({ eq: () => ({ single: async () => ({ data: null, error: null }) }) }),
+          insert: async () => ({ error: null }),
+          update: () => ({ eq: async () => ({ error: null }) }),
+        };
+      },
+    };
+
+    const mockWebPush = {
+      setVapidDetails: (_subject: string, _pub: string, _priv: string) => {},
+      sendNotification: async (sub: any, payloadStr: string) => {
+        const nextAction = nextPushBehaviour.shift() || { ok: true };
+        if (!nextAction.ok) {
+          const err: any = new Error(nextAction.message || 'Push service error');
+          err.statusCode = nextAction.statusCode;
+          throw err;
+        }
+        sentPushCalls.push({ endpoint: sub.endpoint, payload: JSON.parse(payloadStr) });
+      },
+    };
+
+    let handler: ((req: Request) => Promise<Response>) | null = null;
+    const fakeDeno = {
+      env: { get: (k: string) => initialEnv[k] },
+      serve: (fn: (req: Request) => Promise<Response>) => {
+        handler = fn;
+      },
+    };
+
+    const evaluator = new Function(
+      'Deno',
+      '__TEST_CREATE_CLIENT__',
+      '__TEST_WEBPUSH__',
+      compiledEdge.code
+    );
+    evaluator(fakeDeno, () => mockSupabaseClient, mockWebPush);
+
+    return {
+      invoke: (req: Request) => {
+        if (!handler) throw new Error('Edge handler did not register with Deno.serve');
+        return handler(req);
+      },
+      sentPushCalls,
+      queuePushResult: (res: { ok: boolean; statusCode?: number; message?: string }) => nextPushBehaviour.push(res),
+      getSubscriptionsCount: () => subscriptions.length,
+    };
+  }
+
+  const baseEnv = {
+    SUPABASE_URL: 'https://example.supabase.co',
+    SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-secret-key-0001',
+    VAPID_PUBLIC_KEY: DEFAULT_VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY: testPrivKey,
+    VAPID_SUBJECT: 'mailto:realgauravpatel@gmail.com',
+    WEBHOOK_SECRET: 'test-webhook-secret-key-0001',
+  };
+
+  // 12.1 Missing WEBHOOK_SECRET -> 500
+  const noSecretHarness = createEdgeHarness({ ...baseEnv, WEBHOOK_SECRET: undefined });
+  const noSecretRes = await noSecretHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${baseEnv.WEBHOOK_SECRET}` },
+      body: JSON.stringify({}),
+    })
+  );
+  assert(noSecretRes.status === 500, 'Edge handler returns HTTP 500 when WEBHOOK_SECRET is missing');
+
+  // 12.2 Missing or mismatched auth -> 401
+  const mainHarness = createEdgeHarness(baseEnv);
+  const missingAuthRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', { method: 'POST', body: '{}' })
+  );
+  const badAuthRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { authorization: 'Bearer wrong-secret' },
+      body: '{}',
+    })
+  );
+  assert(
+    missingAuthRes.status === 401 && badAuthRes.status === 401,
+    'Edge handler rejects missing or mismatched auth headers with HTTP 401'
+  );
+
+  // 12.3 Invalid JSON -> 400
+  const badJsonRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${baseEnv.WEBHOOK_SECRET}` },
+      body: '{not-valid-json',
+    })
+  );
+  assert(badJsonRes.status === 400, 'Edge handler rejects malformed JSON payloads with HTTP 400');
+
+  // 12.4 Multibyte UTF-8 body > 16KB -> 413
+  const oversizedBody = JSON.stringify({ note: '🚀'.repeat(4200) }); // > 16,384 bytes in UTF-8
+  const oversizedRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${baseEnv.WEBHOOK_SECRET}` },
+      body: oversizedBody,
+    })
+  );
+  assert(oversizedRes.status === 413, 'Edge handler enforces 16KB limit on UTF-8 byte length (HTTP 413)');
+
+  // 12.5 Direct dispatch with WEBHOOK_SECRET -> 403 Forbidden
+  const webhookDirectRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${baseEnv.WEBHOOK_SECRET}` },
+      body: JSON.stringify({
+        recipient_id: memberAId,
+        notification: { title: 'Test', body: 'Direct attempt' },
+      }),
+    })
+  );
+  assert(
+    webhookDirectRes.status === 403,
+    'Edge handler rejects direct dispatch when caller uses WEBHOOK_SECRET instead of Service Role (HTTP 403)'
+  );
+
+  // 12.6 Direct dispatch with Service Role + protocol-relative link sanitization -> 200
+  const srDirectRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${baseEnv.SUPABASE_SERVICE_ROLE_KEY}` },
+      body: JSON.stringify({
+        event_id: 'direct-101',
+        recipient_id: memberAId,
+        notification: { title: 'Admin Alert', body: 'Payload link check', url: '//evil.com/phish' },
+      }),
+    })
+  );
+  const srDirectJson = await srDirectRes.json();
+  assert(
+    srDirectRes.status === 200 &&
+      srDirectJson.delivered === 1 &&
+      mainHarness.sentPushCalls.length === 1 &&
+      mainHarness.sentPushCalls[0].payload.url === '/',
+    'Service Role direct dispatch delivers push and sanitizes //evil.com link to /'
+  );
+
+  // 12.7 Durable idempotency duplicate suppression across repeated webhooks
+  const webhookBody = JSON.stringify({
+    type: 'INSERT',
+    schema: 'public',
+    table: 'notifications',
+    record: {
+      id: 'notif-uuid-001',
+      recipient_id: memberAId,
+      type: 'task',
+      title: 'Task Assigned',
+      body: 'Review kernel module',
+      link: '/projects/123',
+    },
+  });
+  const firstWebhookRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { 'x-webhook-secret': baseEnv.WEBHOOK_SECRET },
+      body: webhookBody,
+    })
+  );
+  const secondWebhookRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { 'x-webhook-secret': baseEnv.WEBHOOK_SECRET },
+      body: webhookBody,
+    })
+  );
+  const firstWebhookJson = await firstWebhookRes.json();
+  const secondWebhookJson = await secondWebhookRes.json();
+  assert(
+    firstWebhookRes.status === 200 &&
+      firstWebhookJson.delivered === 1 &&
+      secondWebhookRes.status === 200 &&
+      secondWebhookJson.delivered === 0 &&
+      mainHarness.sentPushCalls.length === 2,
+    'Durable idempotency suppresses duplicate notification webhook without calling webpush twice'
+  );
+
+  // 12.8 Transient 502 error marks failed (HTTP 503) and retry succeeds (HTTP 200)
+  const retryBody = JSON.stringify({
+    type: 'INSERT',
+    schema: 'public',
+    table: 'notifications',
+    record: {
+      id: 'notif-uuid-retry-502',
+      recipient_id: memberAId,
+      type: 'announcement',
+      title: 'Transient Test',
+      body: 'Testing 502 -> 503 -> retry recovery',
+      link: '/announcements',
+    },
+  });
+  mainHarness.queuePushResult({ ok: false, statusCode: 502, message: 'Bad Gateway from Push Service' });
+  const failedAttemptRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { 'x-webhook-secret': baseEnv.WEBHOOK_SECRET },
+      body: retryBody,
+    })
+  );
+  const retryAttemptRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { 'x-webhook-secret': baseEnv.WEBHOOK_SECRET },
+      body: retryBody,
+    })
+  );
+  const retryAttemptJson = await retryAttemptRes.json();
+  assert(
+    failedAttemptRes.status === 503 &&
+      retryAttemptRes.status === 200 &&
+      retryAttemptJson.delivered === 1,
+    'Transient push 502 failure returns HTTP 503 and successfully recovers on retry'
+  );
+
+  // 12.9 Expired 410 Gone prunes subscription from DB
+  mainHarness.queuePushResult({ ok: false, statusCode: 410, message: 'Gone' });
+  const goneRes = await mainHarness.invoke(
+    new Request('https://edge.local/send-push', {
+      method: 'POST',
+      headers: { 'x-webhook-secret': baseEnv.WEBHOOK_SECRET },
+      body: JSON.stringify({
+        type: 'INSERT',
+        schema: 'public',
+        table: 'notifications',
+        record: {
+          id: 'notif-uuid-gone-410',
+          recipient_id: memberAId,
+          type: 'alert',
+          title: 'Prune Test',
+          body: 'Should prune 410 Gone endpoint',
+        },
+      }),
+    })
+  );
+  const goneJson = await goneRes.json();
+  assert(
+    goneRes.status === 200 && goneJson.pruned === 1 && mainHarness.getSubscriptionsCount() === 0,
+    'HTTP 410 Gone push error automatically prunes stale push_subscriptions record'
+  );
+
+  // -------------------------------------------------------------
+  // 13. FAIL-CLOSED CLIENT GUARANTEES & CONCURRENCY RACE SIMULATION
+  // -------------------------------------------------------------
+  console.log('\nSection 13: Fail-Closed Client API & Concurrent Redemption Lock Tests');
+
+  const { subscribeToPush } = await import('../src/lib/webPush');
+  const pushFailRes = await subscribeToPush(memberAId);
+  assert(
+    pushFailRes.success === false,
+    'subscribeToPush fails closed when browser Push API or Supabase session is unavailable'
+  );
+
+  // Verify non-admin project deletion throws Unauthorized (never silently falls back)
+  let nonAdminDeleteRejected = false;
+  try {
+    await workspaceRepo.deleteProjectSecureAsync(project1.id, 'member.a@debpth.test');
+  } catch (err: any) {
+    nonAdminDeleteRejected = err.message.includes('Unauthorized');
+  }
+  assert(
+    nonAdminDeleteRejected,
+    'deleteProjectSecureAsync fails closed when invoked by non-Super-Admin account'
+  );
+
+  // Simulated atomic concurrent single-use redemption lock test (PostgreSQL FOR UPDATE semantics)
+  const concurrentInv = workspaceRepo.createInvitation(
+    'concurrent.user@debpth.test',
+    'member',
+    [],
+    [project1.id],
+    7,
+    adminId
+  );
+  const concurrentUserId = '00000000-0000-4000-8000-000000000077';
+  await workspaceRepo.ensureAuthenticatedProfile(concurrentUserId, 'concurrent.user@debpth.test', 'Concurrent User');
+
+  const raceResults = await Promise.allSettled([
+    Promise.resolve().then(() =>
+      workspaceRepo.redeemInvitation(concurrentInv.token!, 'Concurrent User', 'concurrent.user@debpth.test', concurrentUserId)
+    ),
+    Promise.resolve().then(() =>
+      workspaceRepo.redeemInvitation(concurrentInv.token!, 'Concurrent User', 'concurrent.user@debpth.test', concurrentUserId)
+    ),
+  ]);
+  const raceFulfilled = raceResults.filter((r) => r.status === 'fulfilled').length;
+  const raceRejected = raceResults.filter((r) => r.status === 'rejected').length;
+  assert(
+    raceFulfilled === 1 && raceRejected === 1,
+    'Concurrent duplicate single-use invitation redemption allows exact 1 success and rejects duplicate'
   );
 
   // -------------------------------------------------------------

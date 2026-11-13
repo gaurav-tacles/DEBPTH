@@ -303,11 +303,26 @@ CREATE TABLE IF NOT EXISTS public.push_subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_push_sub_user ON public.push_subscriptions(user_id);
 
+-- 3.15 PROCESSED WEBHOOK EVENTS TABLE (Two-Phase Durable Webhook Idempotency & Replay Suppression)
+CREATE TABLE IF NOT EXISTS public.processed_webhook_events (
+  event_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 1,
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+  completed_at TIMESTAMPTZ,
+  last_error TEXT,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (timezone('utc'::text, now()) + interval '7 days'),
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed_webhook_events_time ON public.processed_webhook_events(processed_at);
+CREATE INDEX IF NOT EXISTS idx_processed_webhook_events_expires ON public.processed_webhook_events(expires_at);
+
 -- ==============================================================================
 -- 4. SECURITY DEFINER HELPER FUNCTIONS
 -- ==============================================================================
 
--- 4.1 Check if caller is Super Admin (prevents recursive RLS)
+-- 4.1 Check if caller is Verified Super Admin (prevents recursive RLS & unverified email escalation)
 CREATE OR REPLACE FUNCTION public.is_super_admin()
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -316,8 +331,14 @@ SET search_path = public, auth
 STABLE
 AS $$
   SELECT EXISTS (
-    SELECT 1 FROM public.profiles
-    WHERE id = auth.uid() AND role = 'super_admin'
+    SELECT 1
+    FROM public.profiles p
+    JOIN auth.users u ON u.id = p.id
+    WHERE p.id = auth.uid()
+      AND p.role = 'super_admin'
+      AND LOWER(p.email) = 'realgauravpatel@gmail.com'
+      AND LOWER(u.email) = 'realgauravpatel@gmail.com'
+      AND u.email_confirmed_at IS NOT NULL
   );
 $$;
 
@@ -389,16 +410,55 @@ $$;
 -- 5. TRIGGERS
 -- ==============================================================================
 
--- 5.1 Trusted Profile Provisioning on auth.users Creation
--- Strictly assigns 'super_admin' role exclusively to realgauravpatel@gmail.com.
+-- 5.1 Trusted Profile Provisioning on auth.users Creation & Verification
+-- Strictly assigns 'super_admin' role exclusively to verified realgauravpatel@gmail.com.
 -- Does NOT fake mfa_enabled = true; mfa_enabled is false until genuine TOTP enrollment.
-CREATE OR REPLACE FUNCTION public.handle_new_user()
+CREATE OR REPLACE FUNCTION public.enforce_profile_role_immutability()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, auth
 AS $$
 BEGIN
+  IF NEW.role IS DISTINCT FROM OLD.role THEN
+    IF current_setting('debpth.allow_role_sync', true) IS DISTINCT FROM 'true'
+       AND current_setting('role', true) NOT IN ('service_role', 'postgres', 'supabase_admin') THEN
+      RAISE EXCEPTION 'Unauthorized: Profile role is immutable from client requests.';
+    END IF;
+
+    IF NEW.role = 'super_admin' THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM auth.users u
+        WHERE u.id = NEW.id
+          AND LOWER(u.email) = 'realgauravpatel@gmail.com'
+          AND u.email_confirmed_at IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Unauthorized: super_admin role requires a verified Super Admin email.';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_enforce_profile_role_immutability ON public.profiles;
+CREATE TRIGGER trg_enforce_profile_role_immutability
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_profile_role_immutability();
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_is_verified_super_admin BOOLEAN := (
+    LOWER(NEW.email) = 'realgauravpatel@gmail.com' AND NEW.email_confirmed_at IS NOT NULL
+  );
+BEGIN
+  PERFORM set_config('debpth.allow_role_sync', 'true', true);
+
   INSERT INTO public.profiles (
     id,
     email,
@@ -414,11 +474,11 @@ BEGIN
     LOWER(NEW.email),
     COALESCE(NEW.raw_user_meta_data->>'full_name', SPLIT_PART(NEW.email, '@', 1)),
     CASE
-      WHEN LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+      WHEN v_is_verified_super_admin THEN 'super_admin'::public.user_workspace_role
       ELSE 'member'::public.user_workspace_role
     END,
     CASE
-      WHEN LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN ARRAY['Architecture', 'Security', 'Owner']
+      WHEN v_is_verified_super_admin THEN ARRAY['Architecture', 'Security', 'Owner']
       ELSE ARRAY['Developer']
     END,
     FALSE,
@@ -428,16 +488,16 @@ BEGIN
   ON CONFLICT (id) DO UPDATE
   SET email = EXCLUDED.email,
       role = CASE
-        WHEN LOWER(EXCLUDED.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
+        WHEN v_is_verified_super_admin THEN 'super_admin'::public.user_workspace_role
         ELSE profiles.role
       END,
       last_active_at = NOW();
 
-  -- Super Admin is immediately provisioned as workspace member
-  IF LOWER(NEW.email) = 'realgauravpatel@gmail.com' THEN
+  -- Verified Super Admin is immediately provisioned as workspace member
+  IF v_is_verified_super_admin THEN
     INSERT INTO public.workspace_members (user_id, role, joined_at)
     VALUES (NEW.id, 'super_admin', NOW())
-    ON CONFLICT (user_id) DO NOTHING;
+    ON CONFLICT (user_id) DO UPDATE SET role = 'super_admin';
   END IF;
 
   RETURN NEW;
@@ -448,6 +508,41 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+CREATE OR REPLACE FUNCTION public.handle_auth_user_verified()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+BEGIN
+  IF LOWER(NEW.email) = 'realgauravpatel@gmail.com'
+     AND NEW.email_confirmed_at IS NOT NULL
+     AND (OLD.email_confirmed_at IS NULL OR LOWER(OLD.email) IS DISTINCT FROM LOWER(NEW.email)) THEN
+    PERFORM set_config('debpth.allow_role_sync', 'true', true);
+
+    UPDATE public.profiles
+    SET role = 'super_admin'::public.user_workspace_role,
+        email = LOWER(NEW.email),
+        labels = CASE
+          WHEN labels IS NULL OR array_length(labels, 1) IS NULL THEN ARRAY['Architecture', 'Security', 'Owner']
+          ELSE labels
+        END,
+        last_active_at = NOW()
+    WHERE id = NEW.id;
+
+    INSERT INTO public.workspace_members (user_id, role, joined_at)
+    VALUES (NEW.id, 'super_admin', NOW())
+    ON CONFLICT (user_id) DO UPDATE SET role = 'super_admin';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_verified ON auth.users;
+CREATE TRIGGER on_auth_user_verified
+  AFTER UPDATE OF email_confirmed_at, email ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_auth_user_verified();
 
 -- 5.2 Automatic sync for invitation project roles and hash computation
 CREATE OR REPLACE FUNCTION public.sync_invitation_fields()
@@ -501,13 +596,17 @@ DROP POLICY IF EXISTS profiles_insert_auth ON public.profiles;
 
 CREATE POLICY profiles_select ON public.profiles
   FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    id = auth.uid()
+    OR public.is_super_admin()
+    OR public.is_workspace_member()
+  );
 
 CREATE POLICY profiles_update_self ON public.profiles
   FOR UPDATE TO authenticated
   USING (id = auth.uid() OR public.is_super_admin())
   WITH CHECK (
-    (public.is_super_admin() AND LOWER(auth.jwt()->>'email') = 'realgauravpatel@gmail.com')
+    public.is_super_admin()
     OR (
       id = auth.uid()
       AND role = 'member'
@@ -520,10 +619,7 @@ CREATE POLICY profiles_insert_auth ON public.profiles
   WITH CHECK (
     id = auth.uid()
     AND email = LOWER(auth.jwt()->>'email')
-    AND (
-      (role = 'member' AND LOWER(auth.jwt()->>'email') != 'realgauravpatel@gmail.com')
-      OR (role = 'super_admin' AND LOWER(auth.jwt()->>'email') = 'realgauravpatel@gmail.com')
-    )
+    AND role = 'member'
   );
 
 -- 6.1.1 Workspace Members Policies
@@ -558,7 +654,8 @@ CREATE POLICY projects_select ON public.projects
 CREATE POLICY projects_insert ON public.projects
   FOR INSERT TO authenticated
   WITH CHECK (
-    owner_id = auth.uid() OR public.is_super_admin()
+    public.is_workspace_member()
+    AND (owner_id = auth.uid() OR public.is_super_admin())
   );
 
 CREATE POLICY projects_update ON public.projects
@@ -615,6 +712,7 @@ CREATE POLICY pm_delete ON public.project_members
   );
 
 -- 6.4 Invitations Policies
+DROP POLICY IF EXISTS invitations_read_for_redemption ON public.invitations;
 DROP POLICY IF EXISTS invitations_select ON public.invitations;
 DROP POLICY IF EXISTS invitations_insert ON public.invitations;
 DROP POLICY IF EXISTS invitations_update ON public.invitations;
@@ -847,7 +945,7 @@ CREATE POLICY suggestions_select ON public.suggestions
   FOR SELECT TO authenticated
   USING (
     public.is_super_admin()
-    OR submitter_id = auth.uid()
+    OR (submitter_id = auth.uid() AND public.is_workspace_member())
     OR (project_id IS NULL AND public.is_workspace_member())
     OR (project_id IS NOT NULL AND public.has_project_access(project_id))
   );
@@ -867,12 +965,12 @@ CREATE POLICY suggestions_admin_update ON public.suggestions
 
 CREATE POLICY suggestions_submitter_update ON public.suggestions
   FOR UPDATE TO authenticated
-  USING (submitter_id = auth.uid() AND status = 'submitted')
-  WITH CHECK (submitter_id = auth.uid() AND status = 'submitted');
+  USING (submitter_id = auth.uid() AND status = 'submitted' AND public.is_workspace_member())
+  WITH CHECK (submitter_id = auth.uid() AND status = 'submitted' AND public.is_workspace_member());
 
 CREATE POLICY suggestions_delete ON public.suggestions
   FOR DELETE TO authenticated
-  USING (public.is_super_admin() OR (submitter_id = auth.uid() AND status = 'submitted'));
+  USING (public.is_super_admin() OR (submitter_id = auth.uid() AND status = 'submitted' AND public.is_workspace_member()));
 
 -- Trigger to block submitters from modifying protected/administrative columns
 CREATE OR REPLACE FUNCTION public.enforce_suggestion_update_rules()
@@ -925,7 +1023,7 @@ CREATE TRIGGER trg_enforce_suggestion_update_rules
   BEFORE UPDATE ON public.suggestions
   FOR EACH ROW EXECUTE FUNCTION public.enforce_suggestion_update_rules();
 
--- 6.10 Personal Ideas Policies (Strict User Isolation)
+-- 6.10 Personal Ideas Policies (Strict User + Workspace Member Isolation)
 DROP POLICY IF EXISTS ideas_owner_select ON public.ideas;
 DROP POLICY IF EXISTS ideas_owner_insert ON public.ideas;
 DROP POLICY IF EXISTS ideas_owner_update ON public.ideas;
@@ -933,20 +1031,20 @@ DROP POLICY IF EXISTS ideas_owner_delete ON public.ideas;
 
 CREATE POLICY ideas_owner_select ON public.ideas
   FOR SELECT TO authenticated
-  USING (user_id = auth.uid());
+  USING (user_id = auth.uid() AND public.is_workspace_member());
 
 CREATE POLICY ideas_owner_insert ON public.ideas
   FOR INSERT TO authenticated
-  WITH CHECK (user_id = auth.uid());
+  WITH CHECK (user_id = auth.uid() AND public.is_workspace_member());
 
 CREATE POLICY ideas_owner_update ON public.ideas
   FOR UPDATE TO authenticated
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = auth.uid() AND public.is_workspace_member())
+  WITH CHECK (user_id = auth.uid() AND public.is_workspace_member());
 
 CREATE POLICY ideas_owner_delete ON public.ideas
   FOR DELETE TO authenticated
-  USING (user_id = auth.uid());
+  USING (user_id = auth.uid() AND public.is_workspace_member());
 
 -- 6.11 Announcements Policies
 DROP POLICY IF EXISTS announcements_select ON public.announcements;
@@ -963,6 +1061,8 @@ CREATE POLICY announcements_admin ON public.announcements
 
 -- 6.12 Notifications Policies
 DROP POLICY IF EXISTS notifications_recipient ON public.notifications;
+DROP POLICY IF EXISTS notifications_update_recipient ON public.notifications;
+DROP POLICY IF EXISTS notifications_delete_recipient ON public.notifications;
 DROP POLICY IF EXISTS notifications_insert_system ON public.notifications;
 
 CREATE POLICY notifications_recipient ON public.notifications
@@ -980,7 +1080,18 @@ CREATE POLICY notifications_delete_recipient ON public.notifications
 
 CREATE POLICY notifications_insert_system ON public.notifications
   FOR INSERT TO authenticated
-  WITH CHECK (true);
+  WITH CHECK (
+    public.is_workspace_member()
+    AND (
+      recipient_id = auth.uid()
+      OR public.is_super_admin()
+      OR EXISTS (
+        SELECT 1 FROM public.profiles p
+        WHERE p.id = recipient_id
+          AND (public.is_workspace_member(p.id) OR p.role = 'super_admin')
+      )
+    )
+  );
 
 -- 6.13 Activity Logs Policies (Append-only audit trail)
 DROP POLICY IF EXISTS activity_select ON public.activity_logs;
@@ -996,7 +1107,7 @@ CREATE POLICY activity_select ON public.activity_logs
 
 CREATE POLICY activity_insert ON public.activity_logs
   FOR INSERT TO authenticated
-  WITH CHECK (user_id = auth.uid());
+  WITH CHECK (user_id = auth.uid() AND public.is_workspace_member());
 
 -- 6.14 Web Push Subscriptions Policies
 ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
@@ -1012,16 +1123,90 @@ CREATE POLICY push_sub_select ON public.push_subscriptions
 
 CREATE POLICY push_sub_insert ON public.push_subscriptions
   FOR INSERT TO authenticated
-  WITH CHECK (user_id = auth.uid());
+  WITH CHECK (user_id = auth.uid() AND public.is_workspace_member());
 
 CREATE POLICY push_sub_update ON public.push_subscriptions
   FOR UPDATE TO authenticated
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = auth.uid() AND public.is_workspace_member())
+  WITH CHECK (user_id = auth.uid() AND public.is_workspace_member());
 
 CREATE POLICY push_sub_delete ON public.push_subscriptions
   FOR DELETE TO authenticated
   USING (user_id = auth.uid() OR public.is_super_admin());
+
+-- 6.15 Processed Webhook Events Policies & Claim/Complete RPCs (Two-Phase Durable Idempotency)
+ALTER TABLE public.processed_webhook_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS pwe_service_role ON public.processed_webhook_events;
+CREATE POLICY pwe_service_role ON public.processed_webhook_events
+  FOR ALL TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+CREATE OR REPLACE FUNCTION public.claim_webhook_event(p_event_id TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_existing public.processed_webhook_events%ROWTYPE;
+BEGIN
+  DELETE FROM public.processed_webhook_events
+  WHERE expires_at < now() AND status <> 'processing';
+
+  SELECT * INTO v_existing
+  FROM public.processed_webhook_events
+  WHERE event_id = p_event_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.processed_webhook_events (
+      event_id, status, attempts, claimed_at, expires_at, processed_at
+    ) VALUES (
+      p_event_id, 'processing', 1, now(), now() + interval '7 days', now()
+    );
+    RETURN 'claimed';
+  END IF;
+
+  IF v_existing.status = 'completed' THEN
+    RETURN 'already_completed';
+  END IF;
+
+  IF v_existing.status = 'processing' AND v_existing.claimed_at > (now() - interval '2 minutes') THEN
+    RETURN 'in_progress';
+  END IF;
+
+  UPDATE public.processed_webhook_events
+  SET status = 'processing',
+      attempts = attempts + 1,
+      claimed_at = now(),
+      last_error = NULL
+  WHERE event_id = p_event_id;
+
+  RETURN 'reclaimed';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.complete_webhook_event(
+  p_event_id TEXT,
+  p_status TEXT,
+  p_error TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE public.processed_webhook_events
+  SET status = CASE WHEN p_status IN ('completed', 'failed') THEN p_status ELSE 'failed' END,
+      completed_at = CASE WHEN p_status = 'completed' THEN now() ELSE completed_at END,
+      processed_at = now(),
+      last_error = LEFT(p_error, 500)
+  WHERE event_id = p_event_id;
+END;
+$$;
 
 -- ==============================================================================
 -- 7. SUPABASE STORAGE SETUP & STORAGE RLS POLICIES
@@ -1125,7 +1310,7 @@ BEGIN
     RAISE EXCEPTION 'Expiration period must be between 1 and 90 days.';
   END IF;
 
-  v_expires_at := now() + (p_expires_in_days || ' days')::INTERVAL;
+  v_expires_at := now() + make_interval(days => p_expires_in_days);
 
   UPDATE public.invitations
   SET status = 'revoked', revoked_at = now(), revoked_by = v_caller_id
@@ -1147,8 +1332,8 @@ BEGIN
   VALUES (
     v_email,
     'workspace',
-    COALESCE(p_role, 'member'::public.user_workspace_role),
-    p_token,
+    'member'::public.user_workspace_role,
+    NULL,
     COALESCE(p_token_hash, encode(digest(p_token, 'sha256'), 'hex')),
     v_caller_id,
     COALESCE(p_initial_labels, '{}'),
@@ -1219,7 +1404,7 @@ BEGIN
     RAISE EXCEPTION 'Expiration period must be between 1 and 90 days.';
   END IF;
 
-  v_expires_at := now() + (p_expires_in_days || ' days')::INTERVAL;
+  v_expires_at := now() + make_interval(days => p_expires_in_days);
 
   UPDATE public.invitations
   SET status = 'revoked', revoked_at = now(), revoked_by = v_caller_id
@@ -1250,7 +1435,7 @@ BEGIN
     COALESCE(p_project_role, 'collaborator'::public.project_member_role),
     COALESCE(p_permissions, '{"canManageTasks": true, "canUploadDocs": true, "canViewMetrics": true, "canManageMembers": false}'::jsonb),
     'member'::public.user_workspace_role,
-    p_token,
+    NULL,
     COALESCE(p_token_hash, encode(digest(p_token, 'sha256'), 'hex')),
     v_caller_id,
     ARRAY['Developer'],
@@ -1420,6 +1605,8 @@ DECLARE
   v_inv public.invitations%ROWTYPE;
   v_caller_id UUID := auth.uid();
   v_caller_email TEXT;
+  v_email_confirmed_at TIMESTAMPTZ;
+  v_is_verified_super_admin BOOLEAN := FALSE;
   v_proj_id UUID;
   v_proj_role public.project_member_role := 'collaborator';
   v_can_tasks BOOLEAN := TRUE;
@@ -1438,8 +1625,12 @@ BEGIN
     RAISE EXCEPTION 'Invalid or missing invitation token.';
   END IF;
 
-  -- 2. Fetch authenticated caller's email
-  SELECT LOWER(email) INTO v_caller_email FROM auth.users WHERE id = v_caller_id;
+  -- 2. Fetch authenticated caller's email & confirmation timestamp
+  SELECT LOWER(email), email_confirmed_at
+  INTO v_caller_email, v_email_confirmed_at
+  FROM auth.users
+  WHERE id = v_caller_id;
+
   IF v_caller_email IS NULL THEN
     SELECT LOWER(email) INTO v_caller_email FROM public.profiles WHERE id = v_caller_id;
   END IF;
@@ -1485,6 +1676,13 @@ BEGIN
       v_inv.email, v_caller_email;
   END IF;
 
+  v_is_verified_super_admin := (
+    LOWER(v_inv.email) = 'realgauravpatel@gmail.com'
+    AND v_email_confirmed_at IS NOT NULL
+  );
+
+  PERFORM set_config('debpth.allow_role_sync', 'true', true);
+
   -- 7. Profile Creation / Sync without role escalation or faked MFA
   INSERT INTO public.profiles (
     id,
@@ -1498,11 +1696,10 @@ BEGIN
   )
   VALUES (
     v_caller_id,
-    v_inv.email,
+    LOWER(v_inv.email),
     COALESCE(NULLIF(TRIM(p_user_full_name), ''), SPLIT_PART(v_inv.email, '@', 1)),
     CASE
-      WHEN LOWER(v_inv.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'::public.user_workspace_role
-      WHEN v_inv.scope = 'workspace' THEN COALESCE(v_inv.role, 'member'::public.user_workspace_role)
+      WHEN v_is_verified_super_admin THEN 'super_admin'::public.user_workspace_role
       ELSE 'member'::public.user_workspace_role
     END,
     COALESCE(v_inv.initial_labels, ARRAY['Developer']),
@@ -1519,9 +1716,9 @@ BEGIN
   INSERT INTO public.workspace_members (user_id, role, joined_at, invited_by)
   VALUES (
     v_caller_id,
-    CASE 
-      WHEN LOWER(v_inv.email) = 'realgauravpatel@gmail.com' THEN 'super_admin'
-      ELSE COALESCE(v_inv.role::text, 'member')
+    CASE
+      WHEN v_is_verified_super_admin THEN 'super_admin'
+      ELSE 'member'
     END,
     now(),
     v_inv.invited_by
@@ -1793,7 +1990,9 @@ REVOKE ALL ON FUNCTION public.is_workspace_member(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.has_project_access(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.can_manage_project_members(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.can_invite_to_project(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.enforce_profile_role_immutability() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.handle_new_user() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.handle_auth_user_verified() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.sync_invitation_fields() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.create_workspace_invitation(TEXT, public.user_workspace_role, TEXT[], UUID[], INT, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.create_project_invitation(UUID, TEXT, public.project_member_role, JSONB, INT, TEXT, TEXT) FROM PUBLIC;
@@ -1803,6 +2002,8 @@ REVOKE ALL ON FUNCTION public.redeem_invitation_atomic(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.accept_invitation_safe(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.redeem_invitation_safe(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.secure_delete_project(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.claim_webhook_event(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.complete_webhook_event(TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
 
 -- Ensure schema usage
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
@@ -1830,5 +2031,45 @@ GRANT EXECUTE ON FUNCTION public.redeem_invitation_atomic(TEXT, TEXT) TO authent
 GRANT EXECUTE ON FUNCTION public.accept_invitation_safe(TEXT, TEXT) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.redeem_invitation_safe(TEXT, TEXT) TO authenticated, service_role;
 
--- 4. Super Admin Protected RPCs:
+-- 4. Super Admin & Service-Role Protected RPCs:
 GRANT EXECUTE ON FUNCTION public.secure_delete_project(UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.claim_webhook_event(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.complete_webhook_event(TEXT, TEXT, TEXT) TO service_role;
+
+-- ==============================================================================
+-- 10. SUPABASE REALTIME PUBLICATION CONFIGURATION
+-- ==============================================================================
+DO $$
+DECLARE
+  v_table TEXT;
+  v_tables TEXT[] := ARRAY[
+    'profiles',
+    'workspace_members',
+    'projects',
+    'project_members',
+    'invitations',
+    'milestones',
+    'tasks',
+    'documents',
+    'document_access_grants',
+    'suggestions',
+    'ideas',
+    'announcements',
+    'notifications',
+    'activity_logs'
+  ];
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    FOREACH v_table IN ARRAY v_tables
+    LOOP
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime'
+          AND schemaname = 'public'
+          AND tablename = v_table
+      ) THEN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', v_table);
+      END IF;
+    END LOOP;
+  END IF;
+END $$;

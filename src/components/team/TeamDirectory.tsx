@@ -48,7 +48,7 @@ export const TeamDirectory: React.FC = () => {
 
   // Predefined filter chips specified in requirements
   const filterChips = [
-    { label: 'All members (4)', value: 'All' },
+    { label: `All members (${profiles.length})`, value: 'All' },
     { label: 'Architecture', value: 'Architecture' },
     { label: 'Security', value: 'Security' },
     { label: 'Frontend', value: 'Frontend' },
@@ -185,7 +185,7 @@ export const TeamDirectory: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {filteredProfiles.map((member) => {
-            const isCurrentUser = member.id === currentUser?.id || member.email === 'gauravp18189@gmail.com';
+            const isCurrentUser = member.id === currentUser?.id;
             const isSuperAdminRole = member.role === 'super_admin';
 
             return (
@@ -516,10 +516,17 @@ export const TeamDirectory: React.FC = () => {
                           )}
                           {isPending && (
                             <button
-                              onClick={() => {
-                                revokeInvitation(inv.id);
-                                setCopiedText(`Revoked invitation for ${inv.email}`);
-                                setTimeout(() => setCopiedText(null), 2500);
+                              onClick={async () => {
+                                try {
+                                  await revokeInvitation(inv.id);
+                                  setCopiedText(`Revoked invitation for ${inv.email}`);
+                                  setTimeout(() => setCopiedText(null), 2500);
+                                } catch (err: unknown) {
+                                  setCopiedText(
+                                    err instanceof Error ? `Revoke failed: ${err.message}` : 'Revoke failed'
+                                  );
+                                  setTimeout(() => setCopiedText(null), 3500);
+                                }
                               }}
                               className="rounded px-2 py-1 text-[11px] font-semibold text-[#FB7185] hover:bg-[#FB7185]/10 border border-[#FB7185]/30 transition cursor-pointer"
                               title="Revoke pending token immediately"
